@@ -318,50 +318,6 @@ def upload_file():
 load_departments()
 load_records()
 
-
-
-
-
-
-
-
-# === Voice Upload ===
-def start_voice_upload_interface():
-    voice_window = tk.Toplevel()
-    voice_window.title("🎙 語音上傳檔案")
-    voice_window.geometry("400x300")
-    voice_window.configure(bg="#1E3A5F")
-
-    tk.Label(voice_window, text="請說出檔案名稱（中或英皆可），系統將自動搜尋本機檔案", font=("Arial", 11),
-             bg="#1E3A5F", fg="white", wraplength=380).pack(pady=10)
-
-    vu = tk.Canvas(voice_window, width=300, height=100, bg="#FFFFFF", highlightthickness=0)
-    vu.pack(pady=20)
-    bars = [vu.create_rectangle(i * 10, 100, i * 10 + 8, 100, fill="#80BEF5") for i in range(30)]
-
-    def animate_bars(volume):
-        for i, bar in enumerate(bars):
-            height = max(100 - volume * (i % 5), 60)
-            vu.coords(bar, i * 10, height, i * 10 + 8, 100)
-
-    def normalize_extension(text):
-        ext_map = {
-            "點P D F": ".pdf", "點PDF": ".pdf", "PDF": ".pdf",
-            "點D O C X": ".docx", "DOCX": ".docx",
-            "點T X T": ".txt", "TXT": ".txt",
-            "點P P T X": ".pptx", "PPTX": ".pptx"
-        }
-        for key, val in ext_map.items():
-            if key.lower().replace(" ", "") in text.lower().replace(" ", ""):
-                return val
-        return ""
-
-    def convert_chinese_numerals(text):
-        cn_nums = {'零':'0','一':'1','二':'2','三':'3','四':'4','五':'5','六':'6','七':'7','八':'8','九':'9','〇':'0','壹':'1','貳':'2','參':'3'}
-        for cn, num in cn_nums.items():
-            text = text.replace(cn, num)
-        return text
-
     
     
 # ==== Customize the "Sender's Credentials" dialog box (including OK/Cancel) ====
@@ -620,7 +576,6 @@ button_frame.pack(pady=10)
 ttk.Button(button_frame, text="🗑 刪除選擇", command=delete_selected, style="Danger.TButton").grid(row=0, column=0, padx=10)
 ttk.Button(button_frame, text="🤖 分類並發送", command=classify_and_send, style="Primary.TButton").grid(row=0, column=1, padx=10)
 ttk.Button(button_frame, text="📂 選擇文件上傳", command=upload_file, style="Dark.TButton").grid(row=0, column=2, padx=10)
-ttk.Button(button_frame, text="🎤 語音上傳", command=start_voice_upload_interface, style="Orange.TButton").grid(row=0, column=3, padx=10)
 
 # === Email Function Area (Load/Save/Delete Department)） ===
 
