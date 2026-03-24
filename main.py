@@ -1,25 +1,15 @@
  # 本次執行快取 App 密碼 fjjm kkgm peth ymms
 
-import shutil
-from string import ascii_uppercase
+
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog
+from tkinter import filedialog, messagebox
 from tkinter import ttk
 from PIL import Image, ImageTk
 import sqlite3
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import random
-import speech_recognition as sr
-import threading
-import pyaudio
-import numpy as np
-import time
-import difflib
-import whisper
-import torch
-import tempfile
-import platform
+
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -27,47 +17,63 @@ from email.mime.base import MIMEBase
 from email import encoders
 import re
 from collections import OrderedDict
-# === 基本設定 ===
+
+
+import department as dpt
+import uploads as upl
+import utils as utl
+# === BASE Settings ===
 base_path = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(base_path, "uploads.db")
-UPLOAD_DIR = os.path.join(base_path, "uploaded_files")
+config_path = os.path.join(base_path, "config.json")
+
+config_data = utl.load_config(config_path)
+SMTP_HOST = config_data['smtp_host']
+SMTP_PORT = config_data['smtp_port']
+_SMTP_USER = config_data['smtp_user']
+_SMTP_PASS = config_data['smtp_pass']
+_SENDER_EMAIL = config_data['sender_email']
+db_path = config_data['db_path']
+upload_dir = config_data['upload_dir']
+
+MAX_MAIL_BYTES = 15 * 1024 * 1024
+
+DB_PATH = os.path.join(base_path, db_path)
+UPLOAD_DIR = os.path.join(base_path, upload_dir)
 if not os.path.exists(UPLOAD_DIR):
     os.makedirs(UPLOAD_DIR)
 
-# === 初始化資料庫 ===
-conn = sqlite3.connect(DB_PATH)
-cursor = conn.cursor()
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS uploads (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        filename TEXT NOT NULL,
-        filepath TEXT NOT NULL
-    )
-''')
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS departments (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        email TEXT
-    )
-''')
-# 確保部門名稱唯一，才能用 INSERT OR IGNORE
-cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_departments_name ON departments(name)')
-conn.commit()
 
-default_departments = ["人事室", "資訊室", "護理部", "藥學部", "myself"]
-for dept in default_departments:
-    cursor.execute("INSERT OR IGNORE INTO departments (name, email) VALUES (?, ?)", (dept, ''))
-conn.commit()
-conn.close()
+# === INIT DATABASE ===
+dpt.init_db()
 
-# === 主視窗 ===
+# === Global Variables ===
+email_entries = {}
+uploaded_files = []
+
+#region UI
+
+# === define colors ===
+
+BG      = "#E0E0E0"
+PANEL   = "#1E3A5F"
+FG      = "#FFFFFF"
+ENTRYBG = "#0F2F47"
+SELBG   = "#2A628F"
+PRIMARY = "#007ACC"
+SUCCESS = "#28a745"
+DANGER  = "#d9534f"
+WARNING = "#F59E0B"
+DARK = "#374151"
+BTN_ACTIVE = "#2A628F"
+BTN_PRESSED = "#173B57"
+
+# === INIT MAIN WINDOW ===
 root = tk.Tk()
 root.title("AI 智能助手 - 主頁")
 root.geometry("1200x700")
 root.configure(bg="#97CBFF")
 
-# === 統一主題與樣式（只動外觀，不改你的功能） ===
+# === Unify theme and style (only change appearance, not functionality) ===
 def apply_theme(root):
     try:
         root.tk.call("tk", "scaling", 1.2)  # mac 視網膜顯示更銳利
@@ -79,22 +85,15 @@ def apply_theme(root):
         style.configure("Vertical.TScrollbar", troughcolor="#FFFFFF")
     except tk.TclError:
         pass
-    style.configure('Danger.TButton',  background='#d9534f', foreground='white')
-    style.configure('Primary.TButton', background='#007ACC', foreground='white')
-    style.configure('Dark.TButton',    background='#374151', foreground='white')
-    style.configure('Orange.TButton',  background='#F59E0B', foreground='white')
+    style.configure('Danger.TButton',  background=DANGER, foreground='white')
+    style.configure('Primary.TButton', background=PRIMARY, foreground='white')
+    style.configure('Dark.TButton',    background=DARK, foreground='white')
+    style.configure('Orange.TButton',  background=WARNING, foreground='white')
     style.map('TButton',
-          background=[('active', '#2A628F'), ('pressed', '#173B57')],
+          background=[('active', BTN_ACTIVE), ('pressed', BTN_PRESSED)],
           foreground=[('disabled', '#AAAAAA')])
 
-    BG      = "#E0E0E0"
-    PANEL   = "#1E3A5F"
-    FG      = "#FFFFFF"
-    ENTRYBG = "#0F2F47"
-    SELBG   = "#2A628F"
-    PRIMARY = "#007ACC"
-    SUCCESS = "#28a745"
-    DANGER  = "#d9534f"
+    
 
     root.configure(bg=BG)
     root.tk_setPalette(background=BG, foreground=FG,
@@ -107,7 +106,7 @@ def apply_theme(root):
 
     # Buttons（改用 ttk.Button 以確保顏色）
     style.configure("TButton", background=PANEL, foreground=FG, padding=(10,6), borderwidth=0)
-    style.map("TButton", background=[("active", SELBG), ("pressed", "#173B57")])
+    style.map("TButton", background=[("active", BTN_ACTIVE), ("pressed", "#173B57")])
     style.configure("Primary.TButton", background=PRIMARY)
     style.configure("Success.TButton", background=SUCCESS)
     style.configure("Danger.TButton", background=DANGER)
@@ -119,45 +118,30 @@ def apply_theme(root):
     root.option_add("*Listbox.selectBackground", SELBG)
     root.option_add("*Listbox.selectForeground", FG)
 
-apply_theme(root)
 
-# === 左側：部門 Email 管理 ===
+# === Left side: Department Email Management ===
 frame_left = tk.Frame(root, width=400, bg="#1E3A5F", highlightthickness=0)
 frame_left.pack(side="left", fill="y")
 
 label_email = tk.Label(frame_left, text="📬 部門 Email 管理", font=("Arial", 14, "bold"), bg="#1E3A5F", fg="white")
 label_email.pack(pady=(10, 0))
 
-# === 新增部門區塊 ===
+# === New department blocks ===
 add_dept_frame = tk.Frame(frame_left, bg="#d3d3d3", highlightthickness=0)
 add_dept_frame.pack(padx=10, pady=(5, 0), fill="x")
 
 tk.Label(add_dept_frame, text="新增部門名稱：", anchor="w", bg="#d3d3d3", width=15).grid(row=0, column=0, padx=5, pady=2, sticky="w")
-new_dept_name_entry = ttk.Entry(add_dept_frame, width=30)
+new_dept_name_entry = ttk.Entry(add_dept_frame, width=30, foreground="#0F172A")
 new_dept_name_entry.grid(row=0, column=1, padx=5, pady=2, sticky="w")
 
 tk.Label(add_dept_frame, text="新增部門 Email：", anchor="w", bg="#d3d3d3", width=15).grid(row=1, column=0, padx=5, pady=2, sticky="w")
-new_dept_email_entry = ttk.Entry(add_dept_frame, width=30)
+new_dept_email_entry = ttk.Entry(add_dept_frame, width=30, foreground="#0F172A")
 new_dept_email_entry.grid(row=1, column=1, padx=5, pady=2, sticky="w")
 
-def add_department():
-    name = new_dept_name_entry.get().strip()
-    email = new_dept_email_entry.get().strip()
-    if not name or not email:
-        messagebox.showwarning("欄位錯誤", "請輸入完整部門名稱與 Email")
-        return
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO departments (name, email) VALUES (?, ?)", (name, email))
-    conn.commit()
-    conn.close()
-    new_dept_name_entry.delete(0, tk.END)
-    new_dept_email_entry.delete(0, tk.END)
-    load_departments()
 
-ttk.Button(add_dept_frame, text="➕ 新增部門", command=add_department, style="Primary.TButton").grid(row=2, column=0, columnspan=2, pady=8, sticky="we")
+ttk.Button(add_dept_frame, text="➕ 新增部門", command=lambda: add_department(), style="Primary.TButton").grid(row=2, column=0, columnspan=2, pady=8, sticky="we")
 
-# === Email 顯示區塊（Canvas 寬度同步） ===
+# === Email display block (Canvas width synchronized) ===
 email_section_frame = tk.Frame(frame_left, bg="#d3d3d3", highlightthickness=0)
 email_section_frame.pack(padx=10, pady=10, fill="both", expand=True)
 
@@ -178,171 +162,11 @@ def _resize_inner(event):
         canvas.itemconfig(window_id, width=event.width - 12)
 canvas.bind("<Configure>", _resize_inner)
 
-email_entries = {}
+
 btn_save_emails = ttk.Button(frame_left, text="💾 儲存 Email", style="Success.TButton")
 btn_save_emails.pack(pady=5, fill="x")
 
-# === 語音上傳 ===
-def start_voice_upload_interface():
-    voice_window = tk.Toplevel()
-    voice_window.title("🎙 語音上傳檔案")
-    voice_window.geometry("400x300")
-    voice_window.configure(bg="#1E3A5F")
-
-    tk.Label(voice_window, text="請說出檔案名稱（中或英皆可），系統將自動搜尋本機檔案", font=("Arial", 11),
-             bg="#1E3A5F", fg="white", wraplength=380).pack(pady=10)
-
-    vu = tk.Canvas(voice_window, width=300, height=100, bg="#FFFFFF", highlightthickness=0)
-    vu.pack(pady=20)
-    bars = [vu.create_rectangle(i * 10, 100, i * 10 + 8, 100, fill="#80BEF5") for i in range(30)]
-
-    def animate_bars(volume):
-        for i, bar in enumerate(bars):
-            height = max(100 - volume * (i % 5), 60)
-            vu.coords(bar, i * 10, height, i * 10 + 8, 100)
-
-    def normalize_extension(text):
-        ext_map = {
-            "點P D F": ".pdf", "點PDF": ".pdf", "PDF": ".pdf",
-            "點D O C X": ".docx", "DOCX": ".docx",
-            "點T X T": ".txt", "TXT": ".txt",
-            "點P P T X": ".pptx", "PPTX": ".pptx"
-        }
-        for key, val in ext_map.items():
-            if key.lower().replace(" ", "") in text.lower().replace(" ", ""):
-                return val
-        return ""
-
-    def convert_chinese_numerals(text):
-        cn_nums = {'零':'0','一':'1','二':'2','三':'3','四':'4','五':'5','六':'6','七':'7','八':'8','九':'9','〇':'0','壹':'1','貳':'2','參':'3'}
-        for cn, num in cn_nums.items():
-            text = text.replace(cn, num)
-        return text
-
-    def process_voice():
-        model = whisper.load_model("base")
-        recognizer = sr.Recognizer()
-        mic = sr.Microphone()
-        stop_flag = threading.Event()
-
-        def visualize_volume():
-            stream = mic.stream
-            while not stop_flag.is_set():
-                try:
-                    data = stream.read(1024, exception_on_overflow=False)
-                    audio_data = np.frombuffer(data, np.int16)
-                    volume = min(int(np.linalg.norm(audio_data) / 100), 30)
-                    animate_bars(volume)
-                    vu.update()
-                except:
-                    pass
-
-        with mic as source:
-            recognizer.adjust_for_ambient_noise(source)
-            volume_thread = threading.Thread(target=visualize_volume)
-            volume_thread.start()
-
-            try:
-                audio = recognizer.listen(source, timeout=6)
-                stop_flag.set()
-                volume_thread.join()
-
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
-                    wav_path = f.name
-                    with open(wav_path, "wb") as wav_file:
-                        wav_file.write(audio.get_wav_data())
-
-                result = model.transcribe(wav_path, fp16=torch.cuda.is_available())
-                os.remove(wav_path)
-
-                keyword_raw = result["text"].strip()
-                print(f"[Whisper辨識結果]：{keyword_raw}")
-
-                cleaned = keyword_raw.replace("點", ".").replace("dot", ".").replace(" ", "").strip()
-                cleaned = convert_chinese_numerals(cleaned.lower())
-
-                ext = normalize_extension(cleaned)
-                if ext:
-                    keyword = cleaned.replace(ext, "")
-                    possible_exts = [ext]
-                elif '.' in cleaned:
-                    keyword, ext = os.path.splitext(cleaned)
-                    possible_exts = [ext]
-                else:
-                    keyword = cleaned
-                    possible_exts = [".pdf", ".docx", ".txt", ".pptx"]
-
-                print(f"[搜尋關鍵字]：{keyword}, 副檔名：{possible_exts}")
-
-                # 跨平台搜尋目錄
-                search_dirs = []
-                system = platform.system().lower()
-                home = os.path.expanduser("~")
-                for sub in ("Desktop", "Documents"):
-                    p = os.path.join(home, sub)
-                    if os.path.exists(p):
-                        search_dirs.append(p)
-                if system == "windows":
-                    search_dirs.extend([f"{d}:/" for d in ascii_uppercase if os.path.exists(f"{d}:/")])
-                    user_profile = os.environ.get("USERPROFILE", "")
-                    if user_profile:
-                        desktop_path = os.path.join(user_profile, "Desktop")
-                        documents_path = os.path.join(user_profile, "Documents")
-                        search_dirs.extend([desktop_path, documents_path])
-                else:
-                    volumes = "/Volumes"
-                    if os.path.isdir(volumes):
-                        for name in os.listdir(volumes):
-                            vp = os.path.join(volumes, name)
-                            if os.path.isdir(vp):
-                                search_dirs.append(vp)
-
-                if os.path.exists(UPLOAD_DIR):
-                    search_dirs.insert(0, UPLOAD_DIR)
-
-                def find_file_recursive(keyword, base_dirs, exts):
-                    for base in base_dirs:
-                        try:
-                            for root_, dirs_, files_ in os.walk(base):
-                                for f in files_:
-                                    fname_no_ext, fext = os.path.splitext(f)
-                                    if fext.lower() in [e.lower() for e in exts] and keyword in fname_no_ext.lower():
-                                        return os.path.join(root_, f)
-                        except Exception:
-                            continue
-                    return None
-
-                found_path = find_file_recursive(keyword, search_dirs, possible_exts)
-
-                if found_path:
-                    os.makedirs(UPLOAD_DIR, exist_ok=True)
-                    filename = os.path.basename(found_path)
-                    dest_path = os.path.join(UPLOAD_DIR, filename)
-                    shutil.copy2(found_path, dest_path)
-
-                    conn = sqlite3.connect(DB_PATH)
-                    cursor = conn.cursor()
-                    cursor.execute("INSERT INTO uploads (filename, filepath) VALUES (?, ?)", (filename, dest_path))
-                    conn.commit()
-                    conn.close()
-
-                    load_records()
-                    messagebox.showinfo("上傳成功", f"已找到並上傳檔案：{filename}")
-                else:
-                    messagebox.showwarning("找不到檔案", f"辨識為「{keyword_raw}」，但找不到符合檔案")
-
-            except sr.UnknownValueError:
-                messagebox.showerror("辨識失敗", "無法辨識您說的話")
-            except sr.WaitTimeoutError:
-                messagebox.showerror("逾時", "請更快開始說話")
-            except Exception as e:
-                messagebox.showerror("錯誤", f"發生錯誤：{e}")
-            finally:
-                voice_window.destroy()
-
-    threading.Thread(target=process_voice, daemon=True).start()
-
-# === 中間區域：logo + 上傳紀錄 ===
+# === Middle area: logo + upload history ===
 frame_center = tk.Frame(root, bg="#00CACA", highlightthickness=0)
 frame_center.pack(side="right", expand=True, fill="both")
 
@@ -379,39 +203,98 @@ record_scroll = ttk.Scrollbar(record_frame, orient="vertical", command=listbox_r
 record_scroll.pack(side="right", fill="y")
 listbox_records.configure(yscrollcommand=record_scroll.set)
 
+
+#---- APPLY THEME ----
+apply_theme(root)
+
+#endregion
+
+#region Departments
+
+def add_department():
+    name = new_dept_name_entry.get().strip()
+    email = new_dept_email_entry.get().strip()
+    if not name or not email:
+        messagebox.showwarning("欄位錯誤", "請輸入完整部門名稱與 Email")
+        return
+    dpt.insert_department(name, email)
+
+    new_dept_name_entry.delete(0, tk.END)
+    new_dept_email_entry.delete(0, tk.END)
+    load_departments()
+
+def load_departments():
+    for widget in scrollable_frame.winfo_children():
+        widget.destroy()
+    email_entries.clear()
+
+    departments = dpt.get_departments()
+
+    for i, (dept_id, name, email) in enumerate(departments):
+        tk.Label(scrollable_frame, text=name, bg="#1E3A5F", fg="white",
+                 width=18, anchor="w").grid(row=i, column=0, padx=5, pady=2, sticky="w")
+        
+        entry = ttk.Entry(scrollable_frame, width=30)
+        entry.insert(0, email)
+        entry.grid(row=i, column=1, padx=5, pady=2, sticky="we")
+        email_entries[dept_id] = entry
+
+        def make_delete_callback(dept_id, dept_name):
+            def delete_department():
+                if dept_name == "myself":
+                    messagebox.showwarning("禁止刪除", "測試用『myself』不可刪除。")
+                    return
+                if messagebox.askyesno("確認刪除", f"是否刪除部門「{dept_name}」？"):
+                    dpt.delete_department(dept_id)
+                    load_departments()
+            return delete_department
+
+        ttk.Button(scrollable_frame, text="🗑", width=4,
+                   command=make_delete_callback(dept_id, name),
+                   style="Danger.TButton").grid(row=i, column=2, padx=5, pady=2, sticky="e")
+
+    scrollable_frame.grid_columnconfigure(1, weight=1)
+
+def save_department_emails():
+    dpt.update_department_emails(email_entries)
+    messagebox.showinfo("成功", "部門 Email 已儲存")
+
+#endregion
+
+#region  uploads
+
 def load_records():
     listbox_records.delete(0, tk.END)
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT filename FROM uploads ORDER BY id DESC")
-    records = cursor.fetchall()
-    conn.close()
+    records = upl.get_uploads()
+    uploaded_files = records
     for record in records:
-        listbox_records.insert(tk.END, record[0])
-load_records()
+        listbox_records.insert(tk.END, record[1])
+
 
 def delete_selected():
     selected_index = listbox_records.curselection()
     if not selected_index:
         messagebox.showwarning("提醒", "請選擇要刪除的檔案")
         return
-    # 支援多選刪除
+    # Supports multi-select deletion
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     deleted = []
     for idx in selected_index:
         selected_filename = listbox_records.get(idx)
-        cursor.execute("SELECT filepath FROM uploads WHERE filename = ?", (selected_filename,))
-        record = cursor.fetchone()
-        if record:
+        record = next((r for r in uploaded_files if r[1] == selected_filename), None)
+        selected_id = record[0] if record else None
+        selected_filepath = record[2] if record else None
+
+        # delete the file from disk and remove from database
+        if selected_filepath and os.path.exists(selected_filepath):
             try:
-                os.remove(record[0])
+                os.remove(selected_filepath)
             except Exception:
                 pass
-            cursor.execute("DELETE FROM uploads WHERE filename = ?", (selected_filename,))
+            upl.delete_upload(selected_id)
             deleted.append(selected_filename)
-    conn.commit()
-    conn.close()
+
     load_records()
     if deleted:
         messagebox.showinfo("成功", f"已刪除：\n" + "\n".join(deleted))
@@ -424,15 +307,64 @@ def upload_file():
     dest = os.path.join(UPLOAD_DIR, name)
     with open(path, "rb") as src, open(dest, "wb") as d:
         d.write(src.read())
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO uploads (filename, filepath) VALUES (?, ?)", (name, dest))
-    conn.commit()
-    conn.close()
+    upl.insert_upload(name, dest)
     load_records()
     messagebox.showinfo("成功", f"{name} 上傳成功！")
+
+#endregion
+
+
+#---- load data on start ----
+load_departments()
+load_records()
+
+
+
+
+
+
+
+
+# === Voice Upload ===
+def start_voice_upload_interface():
+    voice_window = tk.Toplevel()
+    voice_window.title("🎙 語音上傳檔案")
+    voice_window.geometry("400x300")
+    voice_window.configure(bg="#1E3A5F")
+
+    tk.Label(voice_window, text="請說出檔案名稱（中或英皆可），系統將自動搜尋本機檔案", font=("Arial", 11),
+             bg="#1E3A5F", fg="white", wraplength=380).pack(pady=10)
+
+    vu = tk.Canvas(voice_window, width=300, height=100, bg="#FFFFFF", highlightthickness=0)
+    vu.pack(pady=20)
+    bars = [vu.create_rectangle(i * 10, 100, i * 10 + 8, 100, fill="#80BEF5") for i in range(30)]
+
+    def animate_bars(volume):
+        for i, bar in enumerate(bars):
+            height = max(100 - volume * (i % 5), 60)
+            vu.coords(bar, i * 10, height, i * 10 + 8, 100)
+
+    def normalize_extension(text):
+        ext_map = {
+            "點P D F": ".pdf", "點PDF": ".pdf", "PDF": ".pdf",
+            "點D O C X": ".docx", "DOCX": ".docx",
+            "點T X T": ".txt", "TXT": ".txt",
+            "點P P T X": ".pptx", "PPTX": ".pptx"
+        }
+        for key, val in ext_map.items():
+            if key.lower().replace(" ", "") in text.lower().replace(" ", ""):
+                return val
+        return ""
+
+    def convert_chinese_numerals(text):
+        cn_nums = {'零':'0','一':'1','二':'2','三':'3','四':'4','五':'5','六':'6','七':'7','八':'8','九':'9','〇':'0','壹':'1','貳':'2','參':'3'}
+        for cn, num in cn_nums.items():
+            text = text.replace(cn, num)
+        return text
+
     
-# ==== 自訂「寄件人憑證」對話框（含 OK/取消） ====
+    
+# ==== Customize the "Sender's Credentials" dialog box (including OK/Cancel) ====
 class CredentialsDialog(tk.Toplevel):
     def __init__(self, parent, default_user=""):
         super().__init__(parent)
@@ -488,18 +420,9 @@ def ask_credentials(default_user=""):
     root.wait_window(dlg)
     return dlg.result  # (email, app_password) 或 None（取消）
 
-SMTP_HOST = "smtp.gmail.com"
-SMTP_PORT = 587
-_SMTP_USER = None   # 本次執行快取寄件 Gmail（不落地）
-_SMTP_PASS = None   # 本次執行快取 App 密碼（不落地）
 
 def open_smtp(default_user=""):
     global _SMTP_USER, _SMTP_PASS
-    if not _SMTP_USER or not _SMTP_PASS:
-        creds = ask_credentials(default_user)
-        if not creds:     # 使用者按了取消
-            return None
-        _SMTP_USER, _SMTP_PASS = creds
 
     server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20)
     server.ehlo()
@@ -530,7 +453,7 @@ def get_dept_email(name: str) -> str:
     conn.close()
     return (row[0] or "").strip() if row else ""
         
-MAX_MAIL_BYTES = 15 * 1024 * 1024
+
 
 def parse_recipients(raw: str):
     """支援逗號、分號、空白、換行、頓號分隔；自動過濾空字串。"""
@@ -699,60 +622,13 @@ ttk.Button(button_frame, text="🤖 分類並發送", command=classify_and_send,
 ttk.Button(button_frame, text="📂 選擇文件上傳", command=upload_file, style="Dark.TButton").grid(row=0, column=2, padx=10)
 ttk.Button(button_frame, text="🎤 語音上傳", command=start_voice_upload_interface, style="Orange.TButton").grid(row=0, column=3, padx=10)
 
-# === Email 函數區（載入/儲存/刪除部門） ===
-def load_departments():
-    for widget in scrollable_frame.winfo_children():
-        widget.destroy()
-    email_entries.clear()
+# === Email Function Area (Load/Save/Delete Department)） ===
 
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, name, email FROM departments ORDER BY name")
-    departments = cursor.fetchall()
-    conn.close()
-
-    for i, (dept_id, name, email) in enumerate(departments):
-        tk.Label(scrollable_frame, text=name, bg="#1E3A5F", fg="white",
-                 width=18, anchor="w").grid(row=i, column=0, padx=5, pady=2, sticky="w")
-
-        entry = ttk.Entry(scrollable_frame, width=30)
-        entry.insert(0, email)
-        entry.grid(row=i, column=1, padx=5, pady=2, sticky="we")
-        email_entries[dept_id] = entry
-
-        def make_delete_callback(dept_id, dept_name):
-            def delete_department():
-                if dept_name == "myself":
-                    messagebox.showwarning("禁止刪除", "測試用『myself』不可刪除。")
-                    return
-                if messagebox.askyesno("確認刪除", f"是否刪除部門「{dept_name}」？"):
-                    conn = sqlite3.connect(DB_PATH)
-                    cursor = conn.cursor()
-                    cursor.execute("DELETE FROM departments WHERE id = ?", (dept_id,))
-                    conn.commit()
-                    conn.close()
-                    load_departments()
-            return delete_department
-
-        ttk.Button(scrollable_frame, text="🗑", width=4,
-                   command=make_delete_callback(dept_id, name),
-                   style="Danger.TButton").grid(row=i, column=2, padx=5, pady=2, sticky="e")
-
-    scrollable_frame.grid_columnconfigure(1, weight=1)
-
-def save_department_emails():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    for dept_id, entry in email_entries.items():
-        cursor.execute("UPDATE departments SET email = ? WHERE id = ?", (entry.get().strip(), dept_id))
-    conn.commit()
-    conn.close()
-    messagebox.showinfo("成功", "部門 Email 已儲存")
 
 btn_save_emails.configure(command=save_department_emails)
 
 
-# === Email 寄送（只寄給自己：收件人讀左側 myself；寄件人當場詢問一次） ===
+# === Email sent to oneself (recipient reads "myself" on the left; sender asks once on the spot). ===
 def send_all_to_self():
     # 收件人 = 左側 departments 中的 "myself"
     my_email = get_dept_email("myself")
@@ -760,7 +636,7 @@ def send_all_to_self():
         messagebox.showerror("錯誤", "找不到『myself』部門的 Email，請先在左側設定並按「💾 儲存 Email」。")
         return
 
-    # 要寄的檔案：若有選取只寄選取；否則寄全部
+    # Files to be sent: If there is a selection, send only the selected files; otherwise, send all files.
     files = []
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -815,5 +691,5 @@ def send_all_to_self():
 ttk.Button(button_frame, text="📧 寄給自己（測試）", command=send_all_to_self, style="Success.TButton").grid(row=0, column=4, padx=10)
 
 # 啟動
-load_departments()
+
 root.mainloop()

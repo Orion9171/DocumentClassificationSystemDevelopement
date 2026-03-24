@@ -1,0 +1,9 @@
+{
+    "db_path": "uploads.db",
+    "upload_dir": "uploaded_files",
+    "smtp_host": "smtp.example.com",
+    "smtp_port": 587,
+    "smtp_user": "username",
+    "smtp_pass": "userpassword",
+    "sender_email": "sender@email.com"
+}

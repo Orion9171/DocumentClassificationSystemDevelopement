@@ -5,6 +5,9 @@ import sqlite3
 import subprocess
 import os
 
+import users as usr
+
+
 # 建立資料庫
 conn = sqlite3.connect("users.db")
 cursor = conn.cursor()
@@ -25,15 +28,12 @@ def register():
     if not username or not password:
         messagebox.showerror("錯誤", "請輸入帳號與密碼")
         return
-    conn = sqlite3.connect("users.db")
-    cursor = conn.cursor()
-    try:
-        cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password))
-        conn.commit()
+    response = usr.insert_user(username, password)
+    if response:
         messagebox.showinfo("成功", "註冊成功！")
-    except sqlite3.IntegrityError:
+    else:
         messagebox.showerror("錯誤", "帳號已被註冊")
-    conn.close()
+
 
 # 開啟主畫面腳本
 def open_new_script():
@@ -49,11 +49,9 @@ def open_new_script():
 def login():
     username = entry_username.get()
     password = entry_password.get()
-    conn = sqlite3.connect("users.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE username = ? AND password = ?", (username, password))
-    user = cursor.fetchone()
-    conn.close()
+    
+    # hashed_password = password  # 這裡可以加入密碼哈希處理
+    user = usr.validate_user(username, password)
     if user:
         messagebox.showinfo("成功", "登入成功！")
         open_new_script()
