@@ -9,17 +9,7 @@ import users as usr
 
 
 # 建立資料庫
-conn = sqlite3.connect("users.db")
-cursor = conn.cursor()
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT NOT NULL UNIQUE,
-        password TEXT NOT NULL
-    )
-''')
-conn.commit()
-conn.close()
+usr.init_db()
 
 # 註冊功能
 def register():
