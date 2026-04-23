@@ -484,67 +484,101 @@ def send_multi(server, recipients, dept_name, files_chunk, path_map):
     server.send_message(msg)
     
 def classify_and_send():
+    from classifier_service import classify_file
+    # === 讀取 uploads 資料 ===
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT filename, filepath FROM uploads ORDER BY id DESC")
     files = cursor.fetchall()
-    cursor.execute("SELECT id, name, email FROM departments")
-    departments = cursor.fetchall()
-    path_map = {fn: fp for fn, fp in files}
     conn.close()
-    
+
     if not files:
-        messagebox.showwarning("提醒", "目前無上傳紀錄可分類")
+        messagebox.showwarning("提醒", "目前沒有可分類的檔案")
         return
 
     classified = []
-    for fname, path in files:
-        dept = random.choice(departments)
-        confidence = round(random.uniform(0.5, 0.99), 2)
-        classified.append((fname, dept[1], dept[2] or "未設定", confidence))
 
+    # classification
+    for fname, path in files:
+        try:
+            pred_name, confidence = classify_file(path)
+
+            # 防呆：空結果
+            if not pred_name:
+                pred_name = "無法辨識"
+                confidence = 0.0
+
+            dept_email = get_dept_email(pred_name) or "未設定"
+
+            classified.append((fname, pred_name, dept_email, confidence))
+
+        except Exception as e:
+            classified.append((fname, "分類失敗", f"錯誤：{str(e)}", 0.0))
+
+    # === 顯示結果視窗 ===
     win = tk.Toplevel(root)
     win.title("分類結果確認")
     win.configure(bg="#103545")
 
-    tk.Label(win, text="檔名", font=("Arial", 10, "bold"), width=30, bg="#103545", fg="white").grid(row=0, column=0)
-    tk.Label(win, text="部門名稱", font=("Arial", 10, "bold"), width=20, bg="#103545", fg="white").grid(row=0, column=1)
-    tk.Label(win, text="部門 Email", font=("Arial", 10, "bold"), width=30, bg="#103545", fg="white").grid(row=0, column=2)
-    tk.Label(win, text="信任分數", font=("Arial", 10, "bold"), width=15, bg="#103545", fg="white").grid(row=0, column=3)
+    headers = ["檔名", "部門名稱", "部門 Email", "信任分數"]
 
-    for i, (fname, dname, email, score) in enumerate(classified, 1):
+    for col, h in enumerate(headers):
+        tk.Label(
+            win,
+            text=h,
+            font=("Arial", 10, "bold"),
+            width=25,
+            bg="#103545",
+            fg="white"
+        ).grid(row=0, column=col)
+
+    for i, (fname, dname, email, score) in enumerate(classified, start=1):
         tk.Label(win, text=fname, width=30, anchor="w", bg="#103545", fg="white").grid(row=i, column=0, sticky="w")
         tk.Label(win, text=dname, width=20, anchor="w", bg="#103545", fg="white").grid(row=i, column=1, sticky="w")
         tk.Label(win, text=email, width=30, anchor="w", bg="#103545", fg="white").grid(row=i, column=2, sticky="w")
         tk.Label(win, text=f"{score*100:.1f}%", width=15, anchor="w", bg="#103545", fg="white").grid(row=i, column=3, sticky="w")
-        
-    def confirm():
-        # 依部門把檔案分組（用你前面提供的工具函式）
-        groups = group_by_department(classified)
 
-        # 啟 SMTP（會跳出一次寄件人 Gmail 與 App 密碼；之後本次快取）
+    # === 確認發送 ===
+    def confirm():
+        valid_rows = []
+
+        for fname, dname, email, score in classified:
+            # 過濾掉失敗 / 無法辨識 / 無 email
+            if dname in ["分類失敗", "無法辨識"]:
+                continue
+            valid_rows.append((fname, dname, email, score))
+
+        if not valid_rows:
+            messagebox.showwarning("提醒", "沒有可寄送的有效分類結果")
+            return
+
+        groups = group_by_department(valid_rows)
+
         try:
-            server = open_smtp()  # ← 不再預填 myself
+            server = open_smtp()
             if server is None:
-                messagebox.showinfo("已取消", "你已取消寄送。")
                 return
         except Exception as e:
             messagebox.showerror("SMTP 連線失敗", str(e))
             return
+
         sent = 0
         failed = []
-        missing = []   # 沒填 email 的部門
+        missing = []
+
+        path_map = {fn: fp for fn, fp in files}
 
         for (dept_name, dept_email), file_list in groups.items():
-            # 解析多收件人；沒填就略過
             recipients = parse_recipients(dept_email)
+
             if not recipients:
                 missing.append(dept_name)
                 continue
-            # 多附件依總大小切批（避免超過郵件大小限制）
+
             batches = split_by_total_size(file_list, path_map)
+
             if not batches:
-                failed.append(f"{dept_name}（無可用附件）")
+                failed.append(f"{dept_name}（無附件）")
                 continue
 
             for chunk in batches:
@@ -554,20 +588,31 @@ def classify_and_send():
                 except Exception as e:
                     names = [f for f, _ in chunk]
                     failed.append(f"{dept_name}：{names}（{e}）")
+
         try:
             server.quit()
-        except:
+        except Exception:
             pass
-        # 回饋結果
+
+        # === 結果顯示 ===
         lines = [f"✅ 成功寄出 {sent} 封"]
+
         if missing:
             lines.append("❗ 未設定 Email（已略過）： " + "、".join(missing))
+
         if failed:
             lines.append("⚠️ 失敗：")
             lines += [f"• {x}" for x in failed]
+
         messagebox.showinfo("寄送結果", "\n".join(lines))
         win.destroy()
-    ttk.Button(win, text="✅ 確認並發送", command=confirm, style="Success.TButton").grid(row=i+1, column=0, columnspan=4, pady=10, sticky="we")
+
+    ttk.Button(
+        win,
+        text="✅ 確認並發送",
+        command=confirm,
+        style="Success.TButton"
+    ).grid(row=len(classified)+1, column=0, columnspan=4, pady=10, sticky="we")
 
 # === 右側按鈕列（背景與右半一致 #00CACA） ===
 button_frame = tk.Frame(frame_center, bg="#00CACA", highlightthickness=0)

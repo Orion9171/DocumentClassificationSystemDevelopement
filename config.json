@@ -5,5 +5,10 @@
     "smtp_port": 587,
     "smtp_user": "username",
     "smtp_pass": "userpassword",
-    "sender_email": "sender@email.com"
+    "sender_email": "sender@email.com",
+    "model_config": { 
+        "model_path":"path",
+        "base_model": ""
+
+    }
 }
