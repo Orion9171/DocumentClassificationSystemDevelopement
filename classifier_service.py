@@ -14,9 +14,9 @@ from peft import PeftModel
 
 # OCR settings / File parsers
 try:
-    import fitz
-except Exception: 
-    None
+    import fitz  
+except Exception:
+    fitz = None
 
 try:
     from docx import Document
@@ -202,11 +202,50 @@ class ChunkingCollator:
             "chunk_mask": chunk_mask,          
             "labels": labels                
         }
+def load_app_config(config_path: Optional[str] = None) -> dict:
+    """
+    read config.json。
+    預設會從 classifier_service.py 同一層資料夾找 config.json。
+    """
+    base_path = os.path.dirname(os.path.abspath(__file__))
+
+    if config_path is None:
+        config_path = os.path.join(base_path, "config.json")
+
+    if not os.path.exists(config_path):
+        print(f"[ClassifierService] 找不到 config.json，使用程式預設設定：{config_path}")
+        return {}
+
+    with open(config_path, "r", encoding="utf-8") as f:
+        return json.load(f)
 # Model Deployment Service
 class ClassifierService:
-    def __init__(self, model_dir: Optional[str] = None):
+    def __init__(self, model_dir: Optional[str] = None, config_path: Optional[str] = None):
         self.base_path = os.path.dirname(os.path.abspath(__file__))
-        self.model_dir = model_dir or os.path.join(self.base_path, "Llama_classifier_finetuned")
+
+        # read config.json
+        self.app_config = load_app_config(config_path)
+        model_config = self.app_config.get("model_config", {})
+
+        # 優先順序：
+        # 1. 外部傳入 model_dir
+        # 2. config.json 的 model_config.model_path
+        # 3. classifier_service.py 同層的 Llama-classifier-finetuned
+        config_model_path = model_config.get("model_path", "")
+
+        self.model_dir = (
+            model_dir
+            or config_model_path
+            or os.path.join(self.base_path, "Llama-classifier-finetuned")
+        )
+
+        self.model_dir = os.path.abspath(os.path.expanduser(self.model_dir))
+
+        # config 裡可選填 base_model
+        self.config_base_model = model_config.get("base_model", "")
+
+        print(f"[ClassifierService] 使用模型資料夾：{self.model_dir}")
+
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.tokenizer = None
         self.clf = None
@@ -215,6 +254,7 @@ class ClassifierService:
         self.label2id: Dict[str, int] = {}
         self.meta = {}
         self.model_ready = False
+
         self._load_all()
     # Load in the model
     def _load_all(self):
@@ -240,7 +280,7 @@ class ClassifierService:
         with open(meta_path, "r", encoding="utf-8") as f:
             self.meta = json.load(f)
 
-        backbone_name = self.meta.get("backbone_name", "meta-llama/Meta-Llama-3-8B-Instruct")
+        backbone_name = (self.config_base_model or self.meta.get("backbone_name", "") or "meta-llama/Meta-Llama-3-8B-Instruct")
         pool = self.meta.get("pool", "last")
         chunk_len = int(self.meta.get("chunk_len", 256))
         overlap = int(self.meta.get("overlap", 32))
@@ -414,25 +454,97 @@ class ClassifierService:
         img = Image.open(file_path)
         return pytesseract.image_to_string(img, lang="chi_tra+eng")
 
-    # Data Preprocessing
+   # Data Preprocessing
     def preprocess_text(self, raw_text: str) -> str:
+        """
+        只抽取公文主旨，避免公文文號、來文機關、日期等欄位干擾分類。
+        適用格式：
+        1. 主旨：xxxx
+        2. 主旨
+        xxxx
+        """
         text = (raw_text or "").replace("\x00", " ").strip()
         text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r"\r\n", "\n", text)
         text = re.sub(r"\n+", "\n", text)
 
         if not text:
             return ""
 
-        m = re.search(r"主旨[:：]\s*(.+)", text)
+        # Case 1: 主旨：xxxx 或 主旨: xxxx
+        m = re.search(r"主旨\s*[:：]\s*(.+)", text, flags=re.DOTALL)
         if m:
-            subject = m.group(1).strip().split("\n")[0].strip()
-            return subject[:300]
+            subject = m.group(1).strip()
+            subject = self._clean_subject_tail(subject)
+            return subject[:500]
 
+        # Case 2: 「主旨」獨立成一行，下一行才是主旨內容
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-        if lines:
-            return " ".join(lines[:3])[:300]
 
-        return text[:300]
+        for i, line in enumerate(lines):
+            if line == "主旨":
+                subject_lines = lines[i + 1:]
+                subject = " ".join(subject_lines).strip()
+                subject = self._clean_subject_tail(subject)
+                return subject[:500]
+
+            # 處理像「主旨 行政院...」這種同一行但沒有冒號的情況
+            if line.startswith("主旨 "):
+                subject = line.replace("主旨", "", 1).strip()
+                subject = self._clean_subject_tail(subject)
+                return subject[:500]
+
+        # Case 3: fallback，排除明顯不是主旨的欄位
+        ignore_keywords = [
+            "公文測試資料",
+            "LLM 公文分類系統端到端測試用 PDF",
+            "公文文號",
+            "來文機關",
+            "來文字號",
+            "來文日期",
+            "辦畢日期",
+            "承辦單位",
+            "DEPT_NO",
+        ]
+
+        candidate_lines = []
+        for line in lines:
+            if any(keyword in line for keyword in ignore_keywords):
+                continue
+            if len(line) >= 10:
+                candidate_lines.append(line)
+
+        if candidate_lines:
+            return " ".join(candidate_lines[:3])[:500]
+
+        return text[:500]
+
+
+    def _clean_subject_tail(self, subject: str) -> str:
+        """
+        避免主旨後面誤接到其他欄位。
+        """
+        subject = re.sub(r"\s+", " ", subject).strip()
+
+        stop_words = [
+            "說明",
+            "附件",
+            "正本",
+            "副本",
+            "承辦單位",
+            "DEPT_NO",
+            "來文機關",
+            "來文字號",
+            "來文日期",
+            "辦畢日期",
+        ]
+
+        for stop in stop_words:
+            idx = subject.find(stop)
+            if idx > 0:
+                subject = subject[:idx].strip()
+
+        return subject
 
     # Inference
     @torch.no_grad()
