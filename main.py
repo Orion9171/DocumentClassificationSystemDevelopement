@@ -271,32 +271,47 @@ def load_records():
         listbox_records.insert(tk.END, record[1])
         
 def delete_selected():
-    selected_index = listbox_records.curselection()
-    if not selected_index:
+    selected_indices = list(listbox_records.curselection())
+    if not selected_indices:
         messagebox.showwarning("提醒", "請選擇要刪除的檔案")
         return
-    # Supports multi-select deletion
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    if not messagebox.askyesno("確認刪除", f"確定要刪除 {len(selected_indices)} 個檔案嗎？"):
+        return
     deleted = []
-    for idx in selected_index:
-        selected_filename = listbox_records.get(idx)
-        record = next((r for r in uploaded_files if r[1] == selected_filename), None)
-        selected_id = record[0] if record else None
-        selected_filepath = record[2] if record else None
-
-        # delete the file from disk and remove from database
-        if selected_filepath and os.path.exists(selected_filepath):
-            try:
-                os.remove(selected_filepath)
-            except Exception:
-                pass
-            upl.delete_upload(selected_id)
-            deleted.append(selected_filename)
-
+    failed = []
+    for idx in sorted(selected_indices, reverse=True):
+        try:
+            # uploaded_files 的順序跟 listbox_records 顯示順序一致
+            record = uploaded_files[idx]
+            selected_id = record[0]
+            selected_filename = record[1]
+            selected_filepath = record[2]
+            # 1. 先嘗試刪實體檔案
+            if selected_filepath and os.path.exists(selected_filepath):
+                try:
+                    os.remove(selected_filepath)
+                except Exception as e:
+                    failed.append(f"{selected_filename}：檔案刪除失敗：{e}")
+                    # 不 return，下面仍然刪 DB 紀錄，避免 UI 殘留
+            # 2. 無論實體檔案是否存在，都刪 DB 紀錄
+            if selected_id is not None:
+                upl.delete_upload(selected_id)
+                deleted.append(selected_filename)
+            else:
+                failed.append(f"{selected_filename}：找不到資料庫 ID")
+        except Exception as e:
+            failed.append(f"第 {idx} 筆刪除失敗：{e}")
+            
     load_records()
+
+    msg = []
     if deleted:
-        messagebox.showinfo("成功", f"已刪除：\n" + "\n".join(deleted))
+        msg.append("已刪除：\n" + "\n".join(deleted))
+    if failed:
+        msg.append("失敗：\n" + "\n".join(failed))
+
+    if msg:
+        messagebox.showinfo("刪除結果", "\n\n".join(msg))
 
 def upload_file():
     path = filedialog.askopenfilename(title="選擇檔案")
