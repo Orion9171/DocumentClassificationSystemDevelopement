@@ -222,7 +222,7 @@ def load_app_config(config_path: Optional[str] = None) -> dict:
 class ClassifierService:
     def __init__(self, model_dir: Optional[str] = None, config_path: Optional[str] = None):
         self.base_path = os.path.dirname(os.path.abspath(__file__))
-
+        self._setup_tesseract()
         # read config.json
         self.app_config = load_app_config(config_path)
         model_config = self.app_config.get("model_config", {})
@@ -376,7 +376,21 @@ class ClassifierService:
         if self.device == "cuda":
             return torch.amp.autocast("cuda", dtype=torch.float16)
         return nullcontext()
-
+    
+    def _setup_tesseract(self):
+        if pytesseract is None:
+            return
+        candidates = [
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                pytesseract.pytesseract.tesseract_cmd = path
+                print(f"[ClassifierService] Tesseract path: {path}")
+                return
+        print("[ClassifierService] Warning: 找不到 tesseract.exe，圖片 OCR 可能會失敗。")
+        
     # Text Extract
     def extract_text_from_file(self, file_path: str) -> str:
         ext = os.path.splitext(file_path)[1].lower()
@@ -445,14 +459,45 @@ class ClassifierService:
                     if os.path.exists(tmp_img):
                         os.remove(tmp_img)
             return "\n".join(texts).strip()
-        except Exception:
+        except Exception as e:
+            print(f"[ClassifierService] PDF OCR 失敗：{file_path}\n原因：{e}")
             return ""
 
+    # OCR for images
     def _extract_text_from_image_ocr(self, file_path: str) -> str:
         if pytesseract is None or Image is None:
-            raise RuntimeError("缺少 OCR 依賴。請安裝 pillow、pytesseract，並安裝 tesseract OCR。")
-        img = Image.open(file_path)
-        return pytesseract.image_to_string(img, lang="chi_tra+eng")
+            raise RuntimeError(
+                "缺少 OCR 依賴。請安裝 pillow、pytesseract，並安裝 Tesseract OCR 主程式。"
+            )
+        try:
+            from PIL import ImageOps, ImageFilter
+            img = Image.open(file_path).convert("RGB")
+            # 灰階
+            gray = ImageOps.grayscale(img)
+            # 放大 2 倍，提升中文字辨識率
+            w, h = gray.size
+            gray = gray.resize((w * 2, h * 2))
+            # 自動對比
+            gray = ImageOps.autocontrast(gray)
+            # 銳化
+            gray = gray.filter(ImageFilter.SHARPEN)
+            config = "--oem 3 --psm 6"
+            text = pytesseract.image_to_string(
+                gray,
+                lang="chi_tra+eng",
+                config=config
+            )
+            text = (text or "").replace("\x00", " ").strip()
+            text = re.sub(r"[ \t]+", " ", text)
+            text = re.sub(r"\n+", "\n", text)
+            print("\n===== OCR TEXT PREVIEW =====")
+            print(text[:1000])
+            print("===== OCR TEXT LENGTH =====")
+            print(len(text))
+
+            return text
+        except Exception as e:
+            raise RuntimeError(f"OCR 失敗：{file_path}\n原因：{e}")
 
    # Data Preprocessing
     def preprocess_text(self, raw_text: str) -> str:

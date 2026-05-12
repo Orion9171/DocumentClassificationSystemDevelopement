@@ -262,15 +262,14 @@ def save_department_emails():
 #endregion
 
 #region  uploads
-
 def load_records():
+    global uploaded_files
     listbox_records.delete(0, tk.END)
     records = upl.get_uploads()
     uploaded_files = records
     for record in records:
         listbox_records.insert(tk.END, record[1])
-
-
+        
 def delete_selected():
     selected_index = listbox_records.curselection()
     if not selected_index:
@@ -310,6 +309,19 @@ def upload_file():
     upl.insert_upload(name, dest)
     load_records()
     messagebox.showinfo("成功", f"{name} 上傳成功！")
+
+def upload_images():
+    paths = filedialog.askopenfilenames(title="選擇圖片檔案", filetypes=[ ("Image Files", "*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff;*.webp")])
+    if not paths:
+        return
+    for path in paths:
+        name = os.path.basename(path)
+        dest = os.path.join(UPLOAD_DIR, name)
+        with open(path, "rb") as src, open(dest, "wb") as d:
+            d.write(src.read())
+        upl.insert_upload(name, dest)
+    load_records()
+    messagebox.showinfo("成功", f"{len(paths)} 張圖片上傳成功！")
 
 #endregion
 
@@ -408,8 +420,6 @@ def get_dept_email(name: str) -> str:
     row = c.fetchone()
     conn.close()
     return (row[0] or "").strip() if row else ""
-        
-
 
 def parse_recipients(raw: str):
     """支援逗號、分號、空白、換行、頓號分隔；自動過濾空字串。"""
@@ -621,6 +631,7 @@ button_frame.pack(pady=10)
 ttk.Button(button_frame, text="🗑 刪除選擇", command=delete_selected, style="Danger.TButton").grid(row=0, column=0, padx=10)
 ttk.Button(button_frame, text="🤖 分類並發送", command=classify_and_send, style="Primary.TButton").grid(row=0, column=1, padx=10)
 ttk.Button(button_frame, text="📂 選擇文件上傳", command=upload_file, style="Dark.TButton").grid(row=0, column=2, padx=10)
+ttk.Button(button_frame, text="🖼 選擇圖片上傳", command=upload_images, style="Dark.TButton").grid(row=0, column=3, padx=10)
 
 # === Email Function Area (Load/Save/Delete Department)） ===
 
