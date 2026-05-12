@@ -439,7 +439,8 @@ class ClassifierService:
                 if t:
                     texts.append(t)
             return "\n".join(texts).strip()
-        except Exception:
+        except Exception as e:
+            print(f"[ClassifierService] PDF 文字提取失敗：{file_path}\n原因：{e}")
             return ""
 
     def _extract_text_from_pdf_ocr(self, file_path: str) -> str:
