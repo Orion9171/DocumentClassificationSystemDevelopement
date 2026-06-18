@@ -12,5 +12,6 @@ __pycache__/
 *.docx
 *.doc
 *.pdf
+*.di
 
 *.pyc

@@ -7,6 +7,7 @@ from tkinter import ttk
 from PIL import Image, ImageTk
 import sqlite3
 import os
+
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import random
 
@@ -20,8 +21,10 @@ from collections import OrderedDict
 
 
 import department as dpt
+import documents as doc
 import uploads as upl
 import utils as utl
+import doc_crawler as crawler   
 # === BASE Settings ===
 base_path = os.path.dirname(os.path.abspath(__file__))
 config_path = os.path.join(base_path, "config.json")
@@ -45,6 +48,7 @@ if not os.path.exists(UPLOAD_DIR):
 
 # === INIT DATABASE ===
 dpt.init_db()
+doc.init_documents_table()
 
 # === Global Variables ===
 email_entries = {}
@@ -114,9 +118,12 @@ def apply_theme(root):
     # Entry（用 ttk.Entry，避免 mac 強制白底）
     style.configure("TEntry", fieldbackground="#FFFFFF", foreground="#0F172A", insertcolor="#0F172A")
 
-    # Listbox 選取色一致
-    root.option_add("*Listbox.selectBackground", SELBG)
-    root.option_add("*Listbox.selectForeground", FG)
+    # Treeview（表格）
+    style.configure("Treeview", background=FG, foreground=SELBG, fieldbackground=FG)
+    style.configure("Treeview.Heading", 
+                foreground=SELBG,          
+                background=BG,        
+                font=('Helvetica', 10, 'bold')) # Optional: Makes text bold
 
 
 # === Left side: Department Email Management ===
@@ -193,16 +200,42 @@ label_history.pack(pady=(10, 0))
 record_frame = tk.Frame(frame_center, bg="#FFFFFF", highlightthickness=0)
 record_frame.pack(padx=10, pady=5, fill="both", expand=True)
 
-listbox_records = tk.Listbox(record_frame, width=50, height=10,
-    bg="#FFFFFF", fg="#0F172A",
-    selectbackground="#2A628F",
-    selectforeground="#FFFFFF",
-    highlightthickness=0, relief=tk.FLAT)
-listbox_records.pack(side="left", fill="both", expand=True)
-record_scroll = ttk.Scrollbar(record_frame, orient="vertical", command=listbox_records.yview)
-record_scroll.pack(side="right", fill="y")
-listbox_records.configure(yscrollcommand=record_scroll.set)
+#define the table for displaying documents
+# 1. Define columns
+columns = ('Id', 'DI Filename', 'PDF Filename', 'Classification Department', "Confidence", "Email", "Email Sent")
 
+# 2. Create the Treeview widget
+table = ttk.Treeview(record_frame, columns=columns, show='headings')
+
+# 3. Define headings and column widths
+table.heading('Id', text='ID')
+table.column('Id', width=10, anchor=tk.CENTER)
+
+table.heading('DI Filename', text='DI Filename')
+table.column('DI Filename', width=150, anchor=tk.W)
+
+table.heading('PDF Filename', text='PDF Filename')
+table.column('PDF Filename', width=150, anchor=tk.W)
+
+table.heading('Classification Department', text='Classification Department')
+table.column('Classification Department', width=150, anchor=tk.W)
+
+table.heading('Confidence', text='Confidence')
+table.column('Confidence', width=100, anchor=tk.CENTER)
+
+table.heading('Email', text='Email')
+table.column('Email', width=150, anchor=tk.W)
+
+table.heading('Email Sent', text='Email Sent')
+table.column('Email Sent', width=100, anchor=tk.CENTER)
+
+# 4. Add a scrollbar (highly recommended for tables)
+scrollbar = ttk.Scrollbar(record_frame, orient=tk.VERTICAL, command=table.yview)
+table.configure(yscroll=scrollbar.set)
+
+# Pack everything onto the screen
+table.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
 #---- APPLY THEME ----
 apply_theme(root)
@@ -262,90 +295,137 @@ def save_department_emails():
 #endregion
 
 #region  uploads
-def load_records():
-    global uploaded_files
-    listbox_records.delete(0, tk.END)
-    records = upl.get_uploads()
-    uploaded_files = records
-    for record in records:
-        listbox_records.insert(tk.END, record[1])
+# def load_records():
+#     global uploaded_files
+#     listbox_records.delete(0, tk.END)
+#     records = upl.get_uploads()
+#     uploaded_files = records
+#     for record in records:
+#         listbox_records.insert(tk.END, record[1])
         
-def delete_selected():
-    selected_indices = list(listbox_records.curselection())
-    if not selected_indices:
-        messagebox.showwarning("提醒", "請選擇要刪除的檔案")
-        return
-    if not messagebox.askyesno("確認刪除", f"確定要刪除 {len(selected_indices)} 個檔案嗎？"):
-        return
-    deleted = []
-    failed = []
-    for idx in sorted(selected_indices, reverse=True):
-        try:
-            # uploaded_files 的順序跟 listbox_records 顯示順序一致
-            record = uploaded_files[idx]
-            selected_id = record[0]
-            selected_filename = record[1]
-            selected_filepath = record[2]
-            # 1. 先嘗試刪實體檔案
-            if selected_filepath and os.path.exists(selected_filepath):
-                try:
-                    os.remove(selected_filepath)
-                except Exception as e:
-                    failed.append(f"{selected_filename}：檔案刪除失敗：{e}")
-                    # 不 return，下面仍然刪 DB 紀錄，避免 UI 殘留
-            # 2. 無論實體檔案是否存在，都刪 DB 紀錄
-            if selected_id is not None:
-                upl.delete_upload(selected_id)
-                deleted.append(selected_filename)
-            else:
-                failed.append(f"{selected_filename}：找不到資料庫 ID")
-        except Exception as e:
-            failed.append(f"第 {idx} 筆刪除失敗：{e}")
+# def delete_selected():
+#     selected_indices = list(listbox_records.curselection())
+#     if not selected_indices:
+#         messagebox.showwarning("提醒", "請選擇要刪除的檔案")
+#         return
+#     if not messagebox.askyesno("確認刪除", f"確定要刪除 {len(selected_indices)} 個檔案嗎？"):
+#         return
+#     deleted = []
+#     failed = []
+#     for idx in sorted(selected_indices, reverse=True):
+#         try:
+#             # uploaded_files 的順序跟 listbox_records 顯示順序一致
+#             record = uploaded_files[idx]
+#             selected_id = record[0]
+#             selected_filename = record[1]
+#             selected_filepath = record[2]
+#             # 1. 先嘗試刪實體檔案
+#             if selected_filepath and os.path.exists(selected_filepath):
+#                 try:
+#                     os.remove(selected_filepath)
+#                 except Exception as e:
+#                     failed.append(f"{selected_filename}：檔案刪除失敗：{e}")
+#                     # 不 return，下面仍然刪 DB 紀錄，避免 UI 殘留
+#             # 2. 無論實體檔案是否存在，都刪 DB 紀錄
+#             if selected_id is not None:
+#                 upl.delete_upload(selected_id)
+#                 deleted.append(selected_filename)
+#             else:
+#                 failed.append(f"{selected_filename}：找不到資料庫 ID")
+#         except Exception as e:
+#             failed.append(f"第 {idx} 筆刪除失敗：{e}")
             
-    load_records()
+#     load_records()
 
-    msg = []
-    if deleted:
-        msg.append("已刪除：\n" + "\n".join(deleted))
-    if failed:
-        msg.append("失敗：\n" + "\n".join(failed))
+#     msg = []
+#     if deleted:
+#         msg.append("已刪除：\n" + "\n".join(deleted))
+#     if failed:
+#         msg.append("失敗：\n" + "\n".join(failed))
 
-    if msg:
-        messagebox.showinfo("刪除結果", "\n\n".join(msg))
+#     if msg:
+#         messagebox.showinfo("刪除結果", "\n\n".join(msg))
 
-def upload_file():
-    path = filedialog.askopenfilename(title="選擇檔案")
-    if not path:
-        return
-    name = os.path.basename(path)
-    dest = os.path.join(UPLOAD_DIR, name)
-    with open(path, "rb") as src, open(dest, "wb") as d:
-        d.write(src.read())
-    upl.insert_upload(name, dest)
-    load_records()
-    messagebox.showinfo("成功", f"{name} 上傳成功！")
+# def upload_file():
+#     path = filedialog.askopenfilename(title="選擇檔案")
+#     if not path:
+#         return
+#     name = os.path.basename(path)
+#     dest = os.path.join(UPLOAD_DIR, name)
+#     with open(path, "rb") as src, open(dest, "wb") as d:
+#         d.write(src.read())
+#     upl.insert_upload(name, dest)
+#     load_records()
+#     messagebox.showinfo("成功", f"{name} 上傳成功！")
 
-def upload_images():
-    paths = filedialog.askopenfilenames(title="選擇圖片檔案", filetypes=[ ("Image Files", "*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff;*.webp")])
-    if not paths:
-        return
-    for path in paths:
-        name = os.path.basename(path)
-        dest = os.path.join(UPLOAD_DIR, name)
-        with open(path, "rb") as src, open(dest, "wb") as d:
-            d.write(src.read())
-        upl.insert_upload(name, dest)
-    load_records()
-    messagebox.showinfo("成功", f"{len(paths)} 張圖片上傳成功！")
+# def upload_images():
+#     paths = filedialog.askopenfilenames(title="選擇圖片檔案", filetypes=[ ("Image Files", "*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff;*.webp")])
+#     if not paths:
+#         return
+#     for path in paths:
+#         name = os.path.basename(path)
+#         dest = os.path.join(UPLOAD_DIR, name)
+#         with open(path, "rb") as src, open(dest, "wb") as d:
+#             d.write(src.read())
+#         upl.insert_upload(name, dest)
+#     load_records()
+#     messagebox.showinfo("成功", f"{len(paths)} 張圖片上傳成功！")
+
+#endregion
+
+#region Document crawler
+
+def load_documents():
+    for row in table.get_children():
+        table.delete(row)
+    documents = doc.get_documents()
+    for doc_id, di_filename, pdf_filename, folder_path, instruction, created_at, processed_at, department, confidence, email, email_sent in documents:
+        table.insert('', tk.END, values=(doc_id, di_filename, pdf_filename, department or "", f"{confidence:.2%}" if confidence else "", email or "",  "" if email=="" else "Yes" if email_sent else "No"))
+
+def process_new_documents():
+    crawler.process_and_move_files()
+    load_documents()
+
+
+#endregion
+
+#region Document Classification & Email Sending
+
+def classify_documents():
+    from classifier_service import classify_text
+    documents = doc.get_documents_for_classification()
+    for doc_id, di_filename, pdf_filename, folder_path, instruction in documents:
+        try:
+            pred_name, confidence = classify_text(instruction)
+            if not pred_name:
+                pred_name = "無法辨識"
+                confidence = 0.0
+
+            dept_email = get_dept_email(pred_name) or "未設定"
+            doc.update_classification(doc_id, pred_name, confidence, dept_email)
+        except Exception as e:
+            # doc.update_classification(doc_id, "分類失敗", 0.0, "未設定")
+            print(f"文件 ID {doc_id} 分類失敗：{e}")
+
+def send_email():
+    documents = doc.get_documents_for_email()
+    for doc_id, di_filename, pdf_filename, folder_path, department, email in documents:
+        try:    
+            server = open_smtp()
+            if server is None:
+                return
+            send_one(server, email, f"[AI 公文分發] {di_filename}", f"部門：{department}\n附件：{di_filename}", folder_path)
+            doc.mark_email_sent(doc_id)
+        except Exception as e:
+            print(f"文件 ID {doc_id} 寄信失敗：{e}")
 
 #endregion
 
 
 #---- load data on start ----
 load_departments()
-load_records()
-
-    
+# load_records()
+load_documents()
     
 # ==== Customize the "Sender's Credentials" dialog box (including OK/Cancel) ====
 class CredentialsDialog(tk.Toplevel):
@@ -639,14 +719,17 @@ def classify_and_send():
         style="Success.TButton"
     ).grid(row=len(classified)+1, column=0, columnspan=4, pady=10, sticky="we")
 
+
 # === 右側按鈕列（背景與右半一致 #00CACA） ===
 button_frame = tk.Frame(frame_center, bg="#00CACA", highlightthickness=0)
 button_frame.pack(pady=10)
 
-ttk.Button(button_frame, text="🗑 刪除選擇", command=delete_selected, style="Danger.TButton").grid(row=0, column=0, padx=10)
+# ttk.Button(button_frame, text="🗑 刪除選擇", command=delete_selected, style="Danger.TButton").grid(row=0, column=0, padx=10)
 ttk.Button(button_frame, text="🤖 分類並發送", command=classify_and_send, style="Primary.TButton").grid(row=0, column=1, padx=10)
-ttk.Button(button_frame, text="📂 選擇文件上傳", command=upload_file, style="Dark.TButton").grid(row=0, column=2, padx=10)
-ttk.Button(button_frame, text="🖼 選擇圖片上傳", command=upload_images, style="Dark.TButton").grid(row=0, column=3, padx=10)
+ttk.Button(button_frame, text="Search New Documents", command=process_new_documents, style="Primary.TButton").grid(row=0, column=2, padx=10)
+ttk.Button(button_frame, text="Process Documents", command=classify_documents, style="Primary.TButton").grid(row=0, column=2, padx=10)
+# ttk.Button(button_frame, text="📂 選擇文件上傳", command=upload_file, style="Dark.TButton").grid(row=0, column=2, padx=10)
+# ttk.Button(button_frame, text="🖼 選擇圖片上傳", command=upload_images, style="Dark.TButton").grid(row=0, column=3, padx=10)
 
 # === Email Function Area (Load/Save/Delete Department)） ===
 
@@ -655,66 +738,66 @@ btn_save_emails.configure(command=save_department_emails)
 
 
 # === Email sent to oneself (recipient reads "myself" on the left; sender asks once on the spot). ===
-def send_all_to_self():
-    # 收件人 = 左側 departments 中的 "myself"
-    my_email = get_dept_email("myself")
-    if not my_email or "@" not in my_email:
-        messagebox.showerror("錯誤", "找不到『myself』部門的 Email，請先在左側設定並按「💾 儲存 Email」。")
-        return
+# def send_all_to_self():
+#     # 收件人 = 左側 departments 中的 "myself"
+#     my_email = get_dept_email("myself")
+#     if not my_email or "@" not in my_email:
+#         messagebox.showerror("錯誤", "找不到『myself』部門的 Email，請先在左側設定並按「💾 儲存 Email」。")
+#         return
 
-    # Files to be sent: If there is a selection, send only the selected files; otherwise, send all files.
-    files = []
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    sel = listbox_records.curselection()
-    if sel:
-        for idx in sel:
-            fname = listbox_records.get(idx)
-            cursor.execute("SELECT filepath FROM uploads WHERE filename=?", (fname,))
-            row = cursor.fetchone()
-            if row and os.path.exists(row[0]):
-                files.append((fname, row[0]))
-    else:
-        cursor.execute("SELECT filename, filepath FROM uploads ORDER BY id DESC")
-        for fname, fpath in cursor.fetchall():
-            if os.path.exists(fpath):
-                files.append((fname, fpath))
-    conn.close()
+#     # Files to be sent: If there is a selection, send only the selected files; otherwise, send all files.
+#     files = []
+#     conn = sqlite3.connect(DB_PATH)
+#     cursor = conn.cursor()
+#     sel = listbox_records.curselection()
+#     if sel:
+#         for idx in sel:
+#             fname = listbox_records.get(idx)
+#             cursor.execute("SELECT filepath FROM uploads WHERE filename=?", (fname,))
+#             row = cursor.fetchone()
+#             if row and os.path.exists(row[0]):
+#                 files.append((fname, row[0]))
+#     else:
+#         cursor.execute("SELECT filename, filepath FROM uploads ORDER BY id DESC")
+#         for fname, fpath in cursor.fetchall():
+#             if os.path.exists(fpath):
+#                 files.append((fname, fpath))
+#     conn.close()
 
-    if not files:
-        messagebox.showwarning("提醒", "目前沒有可寄送的檔案。")
-        return
+#     if not files:
+#         messagebox.showwarning("提醒", "目前沒有可寄送的檔案。")
+#         return
 
-    try:
-        server = open_smtp(default_user=my_email)
-        if server is None:
-            messagebox.showinfo("已取消", "你已取消寄送。")
-            return
-    except Exception as e:
-        messagebox.showerror("SMTP 連線失敗", str(e))
-        return
+#     try:
+#         server = open_smtp(default_user=my_email)
+#         if server is None:
+#             messagebox.showinfo("已取消", "你已取消寄送。")
+#             return
+#     except Exception as e:
+#         messagebox.showerror("SMTP 連線失敗", str(e))
+#         return
 
-    sent, failed = 0, []
-    for fname, fpath in files:
-        subject = f"[測試寄送] {fname}"
-        body = f"這是測試寄送（收件人使用左側『myself』Email）。\n附件：{fname}\n（系統自動寄出）"
-        try:
-            send_one(server, my_email, subject, body, fpath)
-            sent += 1
-        except Exception as e:
-            failed.append(f"{fname}（{e}）")
+#     sent, failed = 0, []
+#     for fname, fpath in files:
+#         subject = f"[測試寄送] {fname}"
+#         body = f"這是測試寄送（收件人使用左側『myself』Email）。\n附件：{fname}\n（系統自動寄出）"
+#         try:
+#             send_one(server, my_email, subject, body, fpath)
+#             sent += 1
+#         except Exception as e:
+#             failed.append(f"{fname}（{e}）")
 
-    try:
-        server.quit()
-    except:
-        pass
+#     try:
+#         server.quit()
+#     except:
+#         pass
 
-    summary = [f"✅ 已寄到『myself』：{sent} 封"]
-    if failed:
-        summary.append("⚠️ 失敗：")
-        summary += [f"• {x}" for x in failed]
-    messagebox.showinfo("測試寄信結果", "\n".join(summary))
-ttk.Button(button_frame, text="📧 寄給自己（測試）", command=send_all_to_self, style="Success.TButton").grid(row=0, column=4, padx=10)
+#     summary = [f"✅ 已寄到『myself』：{sent} 封"]
+#     if failed:
+#         summary.append("⚠️ 失敗：")
+#         summary += [f"• {x}" for x in failed]
+#     messagebox.showinfo("測試寄信結果", "\n".join(summary))
+# ttk.Button(button_frame, text="📧 寄給自己（測試）", command=send_all_to_self, style="Success.TButton").grid(row=0, column=4, padx=10)
 
 # 啟動
 
