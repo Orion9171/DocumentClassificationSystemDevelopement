@@ -47,6 +47,10 @@ def process_and_move_files():
                     src_di = os.path.join(item_path, di_file)
                     dst_di = os.path.join(target_subfolder, di_file)
                     shutil.move(src_di, dst_di)
+                if pdf_file:
+                    src_pdf = os.path.join(item_path, pdf_file)
+                    dst_pdf = os.path.join(target_subfolder, pdf_file)
+                    shutil.move(src_pdf, dst_pdf)
 
                 # read the .di file and extract the instruction here, then pass it to the insert_document function
                 def read_di_file(file_path: str) -> str:
@@ -78,7 +82,7 @@ def process_and_move_files():
                     if not xml_text:
                         return ""   
                     #remove XML DOCTYPE to avoid DTD/Entity parsing issues
-                    xml_text = re.sub(r"<!DOCTYPE[\s\S]*?\>", "", xml_text).strip()
+                    xml_text =  re.sub(r"<!DOCTYPE[\s\S]*?\]>", "", xml_text).strip()
                     
                     try:
                         root = ET.fromstring(xml_text)
@@ -97,20 +101,12 @@ def process_and_move_files():
                         return instruction
                     print(f"Warning: No instruction found in DI file '{file_path}'.")
                     return "" 
-                  
+                
+                 # from .di XML extract <主旨><文字>...</文字></主旨>
                 instruction = ''
                 if di_file:
-                    src_di = os.path.join(item_path, di_file)
-                    dst_di = os.path.join(target_subfolder, di_file)
-                    shutil.move(src_di, dst_di)
-                # from .di XML extract <主旨><文字>...</文字></主旨>
-                instruction = extract_instruction_from_di(dst_di)
-                print(f"Extracted instruction from {di_file}: {instruction}")
-
-                if pdf_file:
-                    src_pdf = os.path.join(item_path, pdf_file)
-                    dst_pdf = os.path.join(target_subfolder, pdf_file)
-                    shutil.move(src_pdf, dst_pdf)
+                    instruction = extract_instruction_from_di(dst_di)
+                    print(f"Extracted instruction from {di_file}: {instruction}")
                 
                 # 3. Insert records into the database
                 doc.insert_document(di_filename=di_file or '', 
