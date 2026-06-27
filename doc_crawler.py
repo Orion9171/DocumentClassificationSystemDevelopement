@@ -2,6 +2,8 @@ import os
 import shutil
 import sqlite3
 import documents as doc
+import re
+import xml.etree.ElementTree as ET
 
 # --- CONFIGURATION ---
 SOURCE_DIR = "./new_data_folder"      # The directory to scan
@@ -47,9 +49,64 @@ def process_and_move_files():
                     shutil.move(src_di, dst_di)
 
                 # read the .di file and extract the instruction here, then pass it to the insert_document function
-                instruction = ''
-                #
+                def read_di_file(file_path: str) -> str:
+                    """
+                    reads the content of a .di file with multiple encoding attempts and returns the content as a string. 
+                    If all attempts fail, it returns an empty string.
+                    """
+                    encodings = ["utf-8", "utf-8-sig", "cp950", "big5"]
+                    for enc in encodings:
+                        try:
+                            with open(file_path,"r", encoding = enc) as f:
+                                return f.read()
+                        except UnicodeDecodeError:
+                            continue
+                        except Exception as e:
+                             print(f"Error reading DI file '{file_path}': {e}")
+                             return ""
+                    print(f"Error: Unable to decode DI file '{file_path}'.")
+                    return ""
+                
+                def extract_instruction_from_di(file_path: str) -> str:
+                    """
+                    from. di XML file, extract the instruction text like
+                    <主旨>
+                        <文字>...</文字>
+                    </主旨>
+                    """
+                    xml_text = read_di_file(file_path)
+                    if not xml_text:
+                        return ""   
+                    #remove XML DOCTYPE to avoid DTD/Entity parsing issues
+                    xml_text = re.sub(r"<!DOCTYPE[\s\S]*?\>", "", xml_text).strip()
                     
+                    try:
+                        root = ET.fromstring(xml_text)
+                        subject_node = root.find('.//主旨/文字')
+                        if subject_node is not None and subject_node.text:
+                           instruction = subject_node.text.strip()
+                           instruction = re.sub(r"\s+", "", instruction)
+                           return instruction
+                    except Exception as e:
+                        print(f"XML parsing error in DI file '{file_path}': {e}")
+                    # fallback: if XML parsing fails, we use regex to extract the instruction
+                    m = re.search(r"<主旨>\s*<文字>(.*?)</文字>\s*</主旨>", xml_text, re.DOTALL)
+                    if m:
+                        instruction = m.group(1).strip()     
+                        instruction = re.sub(r"\s+", "", instruction)
+                        return instruction
+                    print(f"Warning: No instruction found in DI file '{file_path}'.")
+                    return "" 
+                  
+                instruction = ''
+                if di_file:
+                    src_di = os.path.join(item_path, di_file)
+                    dst_di = os.path.join(target_subfolder, di_file)
+                    shutil.move(src_di, dst_di)
+                # from .di XML extract <主旨><文字>...</文字></主旨>
+                instruction = extract_instruction_from_di(dst_di)
+                print(f"Extracted instruction from {di_file}: {instruction}")
+
                 if pdf_file:
                     src_pdf = os.path.join(item_path, pdf_file)
                     dst_pdf = os.path.join(target_subfolder, pdf_file)
