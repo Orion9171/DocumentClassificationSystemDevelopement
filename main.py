@@ -296,15 +296,15 @@ def save_department_emails():
 
 #region  uploads
 def upload_document_folder():
-    selected_dir = filedialog.askdirectory(title="選擇資料夾")
+    selected_dir = filedialog.askdirectory(title="選擇要匯入的公文資料夾")
     if not selected_dir:
         return
     try:
         crawler.process_and_move_files(selected_dir=selected_dir)
         load_documents()
-        messagebox.showinfo("匯入完成")
+        messagebox.showinfo("匯入完成", "已完成公文匯入、主旨擷取與資料庫寫入。")
     except Exception as e:
-        messagebox.showerror("錯誤", f"處理資料夾時發生錯誤：{e}")
+        messagebox.showerror("匯入失敗", str(e))
     
 # def load_records():
 #     global uploaded_files

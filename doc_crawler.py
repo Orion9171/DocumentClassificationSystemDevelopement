@@ -10,17 +10,21 @@ SOURCE_DIR = "./new_data_folder"      # The directory to scan
 DEST_DIR = "./working_folder"    # The directory to move files to
 
 
-def process_and_move_files():
-    # Ensure source directory exists
-    if not os.path.exists(SOURCE_DIR):
-        print(f"Error: Source directory '{SOURCE_DIR}' does not exist.")
-        return
-    # Ensure destination directory exists (create if it doesn't)
-    os.makedirs(DEST_DIR, exist_ok=True)
+def process_and_move_files(selected_dir=None):
+    source_dir = selected_dir or SOURCE_DIR
+    dest_dir = DEST_DIR
 
-    # Loop through everything inside the main working folder
-    for item in os.listdir(SOURCE_DIR):
-        item_path = os.path.join(SOURCE_DIR, item)
+    # Ensure source directory exists
+    if not os.path.exists(source_dir):
+        print(f"Error: Source directory '{source_dir}' does not exist.")
+        return
+
+    # Ensure destination directory exists (create if it doesn't)
+    os.makedirs(dest_dir, exist_ok=True)
+
+    # Loop through everything inside the selected/source folder
+    for item in os.listdir(source_dir):
+        item_path = os.path.join(source_dir, item)
         
         # Check if the item is a subfolder (e.g., folder1, folder2)
         if os.path.isdir(item_path):
@@ -34,12 +38,9 @@ def process_and_move_files():
                 elif file.lower().endswith('.pdf'):
                     pdf_file = file
 
-            # If we found at least one of the target files, handle migration & DB entry
             if di_file or pdf_file:
-                # print(f"Processing '{item}': Found DI='{di_file}', PDF='{pdf_file}'")
-                
                 # 1. Recreate the specific subfolder structure in the destination
-                target_subfolder = os.path.join(DEST_DIR, item)
+                target_subfolder = os.path.join(dest_dir, item)
                 os.makedirs(target_subfolder, exist_ok=True)
                 
                 # 2. Safely move the files if they exist
