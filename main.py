@@ -295,6 +295,17 @@ def save_department_emails():
 #endregion
 
 #region  uploads
+def upload_document_folder():
+    selected_dir = filedialog.askdirectory(title="選擇資料夾")
+    if not selected_dir:
+        return
+    try:
+        crawler.process_and_move_files(selected_dir=selected_dir)
+        load_documents()
+        messagebox.showinfo("匯入完成")
+    except Exception as e:
+        messagebox.showerror("錯誤", f"處理資料夾時發生錯誤：{e}")
+    
 # def load_records():
 #     global uploaded_files
 #     listbox_records.delete(0, tk.END)
@@ -374,7 +385,6 @@ def save_department_emails():
 #endregion
 
 #region Document crawler
-
 def load_documents():
     for row in table.get_children():
         table.delete(row)
@@ -725,10 +735,10 @@ button_frame = tk.Frame(frame_center, bg="#00CACA", highlightthickness=0)
 button_frame.pack(pady=10)
 
 # ttk.Button(button_frame, text="🗑 刪除選擇", command=delete_selected, style="Danger.TButton").grid(row=0, column=0, padx=10)
-ttk.Button(button_frame, text="🤖 分類並發送", command=classify_and_send, style="Primary.TButton").grid(row=0, column=1, padx=10)
+ttk.Button(button_frame, text="🤖 分類並發送", command=classify_and_send, style="Primary.TButton").grid(row=0, column=4, padx=10)
 ttk.Button(button_frame, text="Search New Documents", command=process_new_documents, style="Primary.TButton").grid(row=0, column=2, padx=10)
-ttk.Button(button_frame, text="Process Documents", command=classify_documents, style="Primary.TButton").grid(row=0, column=2, padx=10)
-# ttk.Button(button_frame, text="📂 選擇文件上傳", command=upload_file, style="Dark.TButton").grid(row=0, column=2, padx=10)
+ttk.Button(button_frame, text="Process Documents", command=classify_documents, style="Primary.TButton").grid(row=0, column=3, padx=10)
+ttk.Button(button_frame, text="📂 選擇文件上傳", command=upload_document_folder, style="Dark.TButton").grid(row=0, column=1, padx=10)
 # ttk.Button(button_frame, text="🖼 選擇圖片上傳", command=upload_images, style="Dark.TButton").grid(row=0, column=3, padx=10)
 
 # === Email Function Area (Load/Save/Delete Department)） ===
