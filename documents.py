@@ -4,7 +4,7 @@ import utils as utl
 base_path = os.path.dirname(os.path.abspath(__file__))
 config_path = os.path.join(base_path, "config.json")
 config_data = utl.load_config(config_path)
-db_path = 'documents.db'
+db_path = config_data['db_path']
 DB_PATH = os.path.join(base_path, db_path)
 
 
@@ -34,6 +34,37 @@ def get_documents():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT id, di_filename, pdf_filename, folder_path, instruction, created_at, processed_at, department, confidence, email, email_sent FROM documents ORDER BY id DESC")
+    documents = cursor.fetchall()
+    conn.close()
+    return documents
+
+def get_document_by_filter(status = "All", department=None, created_date=None, classified_date=None):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    query = "SELECT id, di_filename, pdf_filename, folder_path, instruction, created_at, processed_at, department, confidence, email, email_sent FROM documents WHERE 1=1"
+    params = []
+
+    if status == "Not Classified":
+        query += " AND department IS NULL"
+    elif status == "Not Emailed":
+        query += " AND email_sent = 0 AND email IS NOT NULL"
+    
+    if department:
+        query += " AND department = ?"
+        params.append(department)
+    
+    if created_date:
+        query += " AND DATE(created_at) = ?"
+        params.append(created_date)
+    
+    if classified_date:
+        query += " AND DATE(processed_at) = ?"
+        params.append(classified_date)
+    
+    query += " ORDER BY id DESC"
+    
+    cursor.execute(query, params)
     documents = cursor.fetchall()
     conn.close()
     return documents
