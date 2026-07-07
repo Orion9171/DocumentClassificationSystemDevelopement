@@ -1,5 +1,5 @@
 {
-    "db_path": "documents.db",
+    "db_path": "doc_classification.db",
     "upload_dir": "uploaded_files",
     "smtp_host": "smtp.example.com",
     "smtp_port": 587,
