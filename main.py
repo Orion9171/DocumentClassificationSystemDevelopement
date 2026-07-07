@@ -4,8 +4,6 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from tkinter import ttk
-from matplotlib import style
-from tkcalendar import DateEntry 
 from PIL import Image, ImageTk
 import sqlite3
 import os
@@ -99,6 +97,8 @@ def apply_theme(root):
           background=[('active', BTN_ACTIVE), ('pressed', BTN_PRESSED)],
           foreground=[('disabled', '#AAAAAA')])
 
+    
+
     root.configure(bg=BG)
     root.tk_setPalette(background=BG, foreground=FG,
                        activeBackground=SELBG, activeForeground=FG,
@@ -118,16 +118,13 @@ def apply_theme(root):
     # Entry（用 ttk.Entry，避免 mac 強制白底）
     style.configure("TEntry", fieldbackground="#FFFFFF", foreground="#0F172A", insertcolor="#0F172A")
 
-    # COmbobox（用 ttk.Combobox，避免 mac 強制白底）
-    style.configure("TCombobox", foreground="#0F172A", fieldbackground="white")
-
     # Treeview（表格）
     style.configure("Treeview", background=FG, foreground=SELBG, fieldbackground=FG)
     style.configure("Treeview.Heading", 
                 foreground=SELBG,          
                 background=BG,        
                 font=('Helvetica', 10, 'bold')) # Optional: Makes text bold
-    
+
 
 # === Left side: Department Email Management ===
 frame_left = tk.Frame(root, width=400, bg="#1E3A5F", highlightthickness=0)
@@ -200,64 +197,8 @@ label_text.pack(pady=10)
 label_history = tk.Label(frame_center, text="📄 上傳紀錄", font=("Arial", 14, "bold"), bg="#103545", fg="white")
 label_history.pack(pady=(10, 0))
 
-frame_filters = tk.Frame(frame_center, bg=PRIMARY, highlightthickness=0)
-frame_filters.pack(padx=10, pady=5, fill="x", expand=True)
-
-optionStatus = ["All", "Not Classified", "Not Emailed"]
-tk.Label(frame_filters, text="Status", anchor="w", bg=PRIMARY, width=15).grid(row=0, column=0, padx=5, pady=2, sticky="w")
-status_entry = ttk.Combobox(frame_filters, values=optionStatus, width=28, foreground="#0F172A")
-status_entry.grid(row=0, column=1, padx=5, pady=2, sticky="w")
-status_entry.current(0)  # Set the default value
-
-
-departmentList = dpt.get_departments()
-departmentList.insert(0, (0, "All", ""))  # Add "All" option at the beginning
-departmentNames = [name for _, name, _ in departmentList]
-tk.Label(frame_filters, text="Department", anchor="w", bg=PRIMARY, width=20).grid(row=0, column=3, padx=5, pady=2, sticky="w")
-dept_entry = ttk.Combobox(frame_filters, values=departmentNames, width=28, foreground="#0F172A")
-dept_entry.grid(row=0, column=4, padx=5, pady=2, sticky="w")
-dept_entry.current(0)  # Set the default value
-
-
-def clear_control(widget):
-    """
-    A generic function to clear various Tkinter controls.
-    Supports: DateEntry, Entry, and Combobox.
-    """
-    if isinstance(widget, ttk.Combobox):
-        widget.set('')  # Clears a dropdown selection completely
-    else:
-        widget.delete(0, "end")  # Clears DateEntry and standard Entry fields
-
-tk.Label(frame_filters, text="Date Created", anchor="w", bg=PRIMARY, width=15).grid(row=1, column=0, padx=5, pady=2, sticky="w")
-created_date_entry = DateEntry(frame_filters, width=22, borderwidth=2, date_pattern='yyyy-mm-dd')
-created_date_entry.grid(row=1, column=1, padx=5, pady=2, sticky="w")
-created_date_entry.delete(0, tk.END)  # Clear the default date
-# Button to clear ONLY the date picker
-btn_clear_date = ttk.Button(
-    frame_filters, 
-    text="X", width=2,
-    command=lambda: clear_control(created_date_entry)
-)
-btn_clear_date.grid(row=1, column=1, padx=5, pady=2, sticky="e")
-
-
-tk.Label(frame_filters, text="Date Classified", anchor="w", bg=PRIMARY, width=15).grid(row=1, column=3, padx=5, pady=2, sticky="w")
-classified_date_entry = DateEntry(frame_filters, width=22, borderwidth=2, date_pattern='yyyy-mm-dd')
-classified_date_entry.grid(row=1, column=4, padx=5, pady=2, sticky="w")
-classified_date_entry.delete(0, tk.END)  # Clear the default date
-btn_clear_classified_date = ttk.Button(
-    frame_filters, 
-    text="X", width=2,
-    command=lambda: clear_control(classified_date_entry)
-)
-btn_clear_classified_date.grid(row=1, column=4, padx=5, pady=2, sticky="e")
-
-# ttk.Button(frame_filters, text="Search",  style="Success.TButton", command=load_documents).grid(row=2, column=0, padx=10)
-
 record_frame = tk.Frame(frame_center, bg="#FFFFFF", highlightthickness=0)
 record_frame.pack(padx=10, pady=5, fill="both", expand=True)
-
 
 #define the table for displaying documents
 # 1. Define columns
@@ -353,29 +294,7 @@ def save_department_emails():
 
 #endregion
 
-#region Document crawler
-def load_documents():
-    for row in table.get_children():
-        table.delete(row)
-
-    status = status_entry.get()
-    department = dept_entry.get() if dept_entry.get() != "All" else None
-    created_date = created_date_entry.get()
-    classified_date = classified_date_entry.get()
-
-    documents = doc.get_document_by_filter(
-        status=status,
-        department=department,
-        created_date=created_date,
-        classified_date=classified_date
-    )
-    for doc_id, di_filename, pdf_filename, folder_path, instruction, created_at, processed_at, department, confidence, email, email_sent in documents:
-        table.insert('', tk.END, values=(doc_id, di_filename, pdf_filename, department or "", f"{confidence:.2%}" if confidence else "", email or "",  "" if email=="" else "Yes" if email_sent else "No"))
-
-def process_new_documents():
-    crawler.process_and_move_files()
-    load_documents()
-
+#region  uploads
 def upload_document_folder():
     selected_dir = filedialog.askdirectory(title="選擇要匯入的公文資料夾")
     if not selected_dir:
@@ -386,7 +305,6 @@ def upload_document_folder():
         messagebox.showinfo("匯入完成", "已完成公文匯入、主旨擷取與資料庫寫入。")
     except Exception as e:
         messagebox.showerror("匯入失敗", str(e))
-<<<<<<< HEAD
     
 # def load_records():
 #     global uploaded_files
@@ -473,8 +391,6 @@ def load_documents():
     documents = doc.get_documents()
     for doc_id, di_filename, pdf_filename, folder_path, instruction, created_at, processed_at, department, confidence, email, email_sent in documents:
         table.insert('', tk.END, values=(doc_id, di_filename, pdf_filename, department or "", f"{confidence:.2%}" if confidence else "", email or "",  "" if email=="" else "Yes" if email_sent else "No"))
-=======
->>>>>>> bb05b04caeda5dd12ba81285f9698cf351e313ae
 
 
 #endregion
@@ -678,20 +594,146 @@ def send_multi(server, recipients, dept_name, files_chunk, path_map):
 
     server.send_message(msg)
     
+def classify_and_send():
+    from classifier_service import classify_file
+    # === 讀取 uploads 資料 ===
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT filename, filepath FROM uploads ORDER BY id DESC")
+    files = cursor.fetchall()
+    conn.close()
+
+    if not files:
+        messagebox.showwarning("提醒", "目前沒有可分類的檔案")
+        return
+
+    classified = []
+
+    # classification
+    for fname, path in files:
+        try:
+            pred_name, confidence = classify_file(path)
+
+            # 防呆：空結果
+            if not pred_name:
+                pred_name = "無法辨識"
+                confidence = 0.0
+
+            dept_email = get_dept_email(pred_name) or "未設定"
+
+            classified.append((fname, pred_name, dept_email, confidence))
+
+        except Exception as e:
+            classified.append((fname, "分類失敗", f"錯誤：{str(e)}", 0.0))
+
+    # === 顯示結果視窗 ===
+    win = tk.Toplevel(root)
+    win.title("分類結果確認")
+    win.configure(bg="#103545")
+
+    headers = ["檔名", "部門名稱", "部門 Email", "信任分數"]
+
+    for col, h in enumerate(headers):
+        tk.Label(
+            win,
+            text=h,
+            font=("Arial", 10, "bold"),
+            width=25,
+            bg="#103545",
+            fg="white"
+        ).grid(row=0, column=col)
+
+    for i, (fname, dname, email, score) in enumerate(classified, start=1):
+        tk.Label(win, text=fname, width=30, anchor="w", bg="#103545", fg="white").grid(row=i, column=0, sticky="w")
+        tk.Label(win, text=dname, width=20, anchor="w", bg="#103545", fg="white").grid(row=i, column=1, sticky="w")
+        tk.Label(win, text=email, width=30, anchor="w", bg="#103545", fg="white").grid(row=i, column=2, sticky="w")
+        tk.Label(win, text=f"{score*100:.1f}%", width=15, anchor="w", bg="#103545", fg="white").grid(row=i, column=3, sticky="w")
+
+    # === 確認發送 ===
+    def confirm():
+        valid_rows = []
+
+        for fname, dname, email, score in classified:
+            # 過濾掉失敗 / 無法辨識 / 無 email
+            if dname in ["分類失敗", "無法辨識"]:
+                continue
+            valid_rows.append((fname, dname, email, score))
+
+        if not valid_rows:
+            messagebox.showwarning("提醒", "沒有可寄送的有效分類結果")
+            return
+
+        groups = group_by_department(valid_rows)
+
+        try:
+            server = open_smtp()
+            if server is None:
+                return
+        except Exception as e:
+            messagebox.showerror("SMTP 連線失敗", str(e))
+            return
+
+        sent = 0
+        failed = []
+        missing = []
+
+        path_map = {fn: fp for fn, fp in files}
+
+        for (dept_name, dept_email), file_list in groups.items():
+            recipients = parse_recipients(dept_email)
+
+            if not recipients:
+                missing.append(dept_name)
+                continue
+
+            batches = split_by_total_size(file_list, path_map)
+
+            if not batches:
+                failed.append(f"{dept_name}（無附件）")
+                continue
+
+            for chunk in batches:
+                try:
+                    send_multi(server, recipients, dept_name, chunk, path_map)
+                    sent += 1
+                except Exception as e:
+                    names = [f for f, _ in chunk]
+                    failed.append(f"{dept_name}：{names}（{e}）")
+
+        try:
+            server.quit()
+        except Exception:
+            pass
+
+        # === 結果顯示 ===
+        lines = [f"✅ 成功寄出 {sent} 封"]
+
+        if missing:
+            lines.append("❗ 未設定 Email（已略過）： " + "、".join(missing))
+
+        if failed:
+            lines.append("⚠️ 失敗：")
+            lines += [f"• {x}" for x in failed]
+
+        messagebox.showinfo("寄送結果", "\n".join(lines))
+        win.destroy()
+
+    ttk.Button(
+        win,
+        text="✅ 確認並發送",
+        command=confirm,
+        style="Success.TButton"
+    ).grid(row=len(classified)+1, column=0, columnspan=4, pady=10, sticky="we")
+
+
 # === 右側按鈕列（背景與右半一致 #00CACA） ===
 button_frame = tk.Frame(frame_center, bg="#00CACA", highlightthickness=0)
 button_frame.pack(pady=10)
 
-<<<<<<< HEAD
 # ttk.Button(button_frame, text="🗑 刪除選擇", command=delete_selected, style="Danger.TButton").grid(row=0, column=0, padx=10)
-=======
-ttk.Button(button_frame, text="Search New Documents", command=process_new_documents, style="Primary.TButton").grid(row=0, column=2, padx=10)
->>>>>>> bb05b04caeda5dd12ba81285f9698cf351e313ae
 ttk.Button(button_frame, text="Process Documents", command=classify_documents, style="Primary.TButton").grid(row=0, column=3, padx=10)
 ttk.Button(button_frame, text="📂 選擇文件上傳", command=upload_document_folder, style="Dark.TButton").grid(row=0, column=1, padx=10)
-
-
-ttk.Button(frame_filters, text="Search",  style="Success.TButton", command=load_documents).grid(row=2, column=0, padx=10)
+# ttk.Button(button_frame, text="🖼 選擇圖片上傳", command=upload_images, style="Dark.TButton").grid(row=0, column=3, padx=10)
 
 # === Email Function Area (Load/Save/Delete Department)） ===
 
