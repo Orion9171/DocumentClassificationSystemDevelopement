@@ -396,6 +396,8 @@ def classify_documents():
     from classifier_service import classify_text
     documents = doc.get_documents_for_classification()
     for doc_id, di_filename, pdf_filename, folder_path, instruction in documents:
+        #Add progress bar or status update here if needed
+        
         try:
             pred_name, confidence = classify_text(instruction)
             if not pred_name:
