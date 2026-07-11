@@ -143,69 +143,70 @@ def extract_instruction_from_di(file_path: str) -> str:
     return ""
 
 
-def process_and_move_files(selected_dir=None):
-    """
-    正確 pipeline：
-
-    如果 selected_dir 有值：
-        本地 selected_dir
-        -> copy 到 ./new_data_folder
-        -> 再掃 ./new_data_folder
-
-    不管 selected_dir 有沒有值，真正被 move / rmtree 的來源都只會是：
-        ./new_data_folder
-
-    因此本地原始資料夾不會被搬走。
-    """
-    # Step 0：如果 main.py 傳入本地資料夾，先 copy 到 ./new_data_folder
+def process_and_move_files(selected_dir=None, progress_callback=None):
     if selected_dir:
         imported_count = import_selected_folder_to_new_data(selected_dir)
         if imported_count == 0:
             print("No new document folders imported. Stop processing.")
+            if progress_callback:
+                progress_callback(0, 0, "No new document folders imported. Stop processing.")
             return
 
-    # Step 1：一律掃描 ./new_data_folder
     source_dir = SOURCE_DIR
     dest_dir = DEST_DIR
 
-    # Ensure source directory exists
     if not os.path.exists(source_dir):
         os.makedirs(source_dir, exist_ok=True)
         print(f"Source directory '{source_dir}' did not exist. Created it.")
+        if progress_callback:
+            progress_callback(0, 0, f"Source directory '{source_dir}' did not exist. Created it.")
         return
 
-    # Ensure destination directory exists
     os.makedirs(dest_dir, exist_ok=True)
 
     processed_count = 0
 
-    # Loop through everything inside ./new_data_folder
+    # Scan source_dir for subfolders that contain .di or .pdf files
+    process_items = []
+
     for item in os.listdir(source_dir):
         item_path = os.path.join(source_dir, item)
 
-        # Check if the item is a subfolder
         if not os.path.isdir(item_path):
             continue
+
+        has_target_file = False
+        for file in os.listdir(item_path):
+            if file.lower().endswith(".di") or file.lower().endswith(".pdf"):
+                has_target_file = True
+                break
+
+        if has_target_file:
+            process_items.append((item, item_path))
+        else:
+            print(f"Skipping '{item}': No .di or .pdf files found inside.")
+
+    total = len(process_items)
+
+    if progress_callback:
+        progress_callback(0, total, "Ready to process new files.")
+
+    for index, (item, item_path) in enumerate(process_items, start=1):
+        if progress_callback:
+            progress_callback(index - 1, total, f"Processing: {item}")
 
         di_file = None
         pdf_file = None
 
-        # Scan inside the subfolder for .di and .pdf files
         for file in os.listdir(item_path):
             if file.lower().endswith(".di"):
                 di_file = file
             elif file.lower().endswith(".pdf"):
                 pdf_file = file
 
-        if not di_file and not pdf_file:
-            print(f"Skipping '{item}': No .di or .pdf files found inside.")
-            continue
-
-        # 1. Recreate the specific subfolder structure in the destination
         target_subfolder = os.path.join(dest_dir, item)
         os.makedirs(target_subfolder, exist_ok=True)
 
-        # 2. Safely move the files from ./new_data_folder to ./working_folder
         if di_file:
             src_di = os.path.join(item_path, di_file)
             dst_di = os.path.join(target_subfolder, di_file)
@@ -224,13 +225,11 @@ def process_and_move_files(selected_dir=None):
 
             shutil.move(src_pdf, dst_pdf)
 
-        # 3. Extract instruction from .di
         instruction = ""
         if di_file:
             instruction = extract_instruction_from_di(dst_di)
             print(f"Extracted instruction from {di_file}: {instruction}")
 
-        # 4. Insert record into database
         doc.insert_document(
             di_filename=di_file or "",
             pdf_filename=pdf_file or "",
@@ -238,7 +237,6 @@ def process_and_move_files(selected_dir=None):
             instruction=instruction
         )
 
-        # 5. Remove processed source folder inside ./new_data_folder
         try:
             shutil.rmtree(item_path)
             print(f"-> Successfully moved files, logged to DB, and REMOVED source folder: {item}")
@@ -248,8 +246,10 @@ def process_and_move_files(selected_dir=None):
         print(f"-> Successfully moved files and inserted DB record for {item}.")
         processed_count += 1
 
+        if progress_callback:
+            progress_callback(index, total, f"Completed: {item}")
+            
     print(f"\nAll file processing and DB insertions are complete! Processed: {processed_count}")
-
 
 if __name__ == "__main__":
     process_and_move_files()

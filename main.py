@@ -296,6 +296,57 @@ table.configure(yscroll=scrollbar.set)
 table.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
+# region Progress Bar Area
+progress_frame = tk.Frame(frame_center, bg="#00CACA", highlightthickness=0)
+progress_frame.pack(padx=10, pady=(0, 8), fill="x")
+progress_text_var = tk.StringVar(value="Current Status：Waiting for action")
+progress_value_var = tk.DoubleVar(value=0)
+progress_label = tk.Label(
+    progress_frame,
+    textvariable=progress_text_var,
+    bg="#00CACA",
+    fg="white",
+    anchor="w"
+)
+progress_label.pack(fill="x", padx=5, pady=(2, 2))
+progress_bar = ttk.Progressbar(
+    progress_frame,
+    variable=progress_value_var,
+    maximum=100,
+    mode="determinate"
+)
+progress_bar.pack(fill="x", padx=5, pady=(2, 2))
+
+def update_progress(current, total, message="Processing"):
+    if total <= 0:
+        percent = 0
+        progress_text_var.set(f"{message}：0/0")
+    else:
+        percent = (current / total) * 100
+        progress_text_var.set(
+            f"{message}：{current}/{total}（{percent:.1f}%）"
+        )
+
+    progress_value_var.set(percent)
+    root.update_idletasks()
+
+def reset_progress(message="Current Status：Waiting for action"):
+    progress_value_var.set(0)
+    progress_text_var.set(message)
+    root.update_idletasks()
+
+def finish_progress(message="Completed"):
+    progress_value_var.set(100)
+    progress_text_var.set(message)
+    root.update_idletasks()
+    
+def set_progress_percent(percent, message="Processing"):
+    percent = max(0, min(100, float(percent)))
+    progress_value_var.set(percent)
+    progress_text_var.set(f"{message}（{percent:.1f}%）")
+    root.update_idletasks()
+    
+# endregion
 #---- APPLY THEME ----
 apply_theme(root)
 
@@ -377,50 +428,165 @@ def process_new_documents():
     load_documents()
 
 def upload_document_folder():
-    selected_dir = filedialog.askdirectory(title="選擇要匯入的公文資料夾")
+    selected_dir = filedialog.askdirectory(title="Choose Document Folder to Upload")
     if not selected_dir:
         return
     try:
-        crawler.process_and_move_files(selected_dir=selected_dir)
+        reset_progress("Starting document folder import...")
+        crawler.process_and_move_files(
+            selected_dir=selected_dir,
+            progress_callback=update_progress
+        )
         load_documents()
-        messagebox.showinfo("匯入完成", "已完成公文匯入、主旨擷取與資料庫寫入。")
+        finish_progress("Document folder import completed")
+        messagebox.showinfo(
+            "Import Completed",
+            "Document folder import, instruction extraction, and database writing completed."
+        )
     except Exception as e:
-        messagebox.showerror("匯入失敗", str(e))
-
-
+        reset_progress("Import Failed")
+        messagebox.showerror("Import Failed", str(e))
 #endregion
 
 #region Document Classification & Email Sending
 
 def classify_documents():
-    from classifier_service import classify_text
+    from classifier_service import get_classifier_service
+
     documents = doc.get_documents_for_classification()
-    for doc_id, di_filename, pdf_filename, folder_path, instruction in documents:
-        #Add progress bar or status update here if needed
-        
+    total_docs = len(documents)
+
+    if total_docs == 0:
+        reset_progress("No documents to classify")
+        messagebox.showinfo(
+            "Reminder",
+            "There are currently no documents to classify.\n\n"
+            "Possible reasons:\n"
+            "1. No documents have been imported\n"
+            "2. All documents have already been classified\n"
+            "3. No unclassified data under the filter conditions"
+        )
+        return
+
+    success_count = 0
+    failed_count = 0
+    failed_messages = []
+
+    # 整體分類進度設計：
+    # 0% ~ 30%：模型載入
+    # 30% ~ 100%：逐筆 inference
+    MODEL_LOAD_WEIGHT = 30
+    INFERENCE_WEIGHT = 70
+
+    def model_loading_progress(current, total, message):
+        if total <= 0:
+            percent = 0
+        else:
+            percent = (current / total) * MODEL_LOAD_WEIGHT
+
+        set_progress_percent(
+            percent,
+            f"Model loading: {message}"
+        )
+
+    try:
+        # 第一次執行會真的載入模型；之後會直接回傳已載入的 service
+        service = get_classifier_service(
+            progress_callback=model_loading_progress
+        )
+    except Exception as e:
+        reset_progress("Model loading failed")
+        messagebox.showerror("Model Loading Failed", str(e))
+        return
+
+    for doc_index, (doc_id, di_filename, pdf_filename, folder_path, instruction) in enumerate(documents, start=1):
+        display_name = di_filename or pdf_filename or f"Document ID {doc_id}"
+
         try:
-            pred_name, confidence = classify_text(instruction)
+            if not instruction or not instruction.strip():
+                failed_count += 1
+                failed_messages.append(f"Document ID {doc_id}: instruction is empty")
+
+                percent = MODEL_LOAD_WEIGHT + (doc_index / total_docs) * INFERENCE_WEIGHT
+                set_progress_percent(
+                    percent,
+                    f"Skipped empty instruction: {display_name}"
+                )
+                continue
+
+            def inference_progress(current, total, message):
+                if total <= 0:
+                    inner_ratio = 0
+                else:
+                    inner_ratio = current / total
+
+                completed_docs = doc_index - 1
+
+                percent = MODEL_LOAD_WEIGHT + (
+                    (completed_docs + inner_ratio) / total_docs
+                ) * INFERENCE_WEIGHT
+
+                set_progress_percent(
+                    percent,
+                    f"Inference {doc_index}/{total_docs}: {display_name} | {message}"
+                )
+
+            inference_progress(0, 6, "Starting inference")
+
+            pred_name, confidence = service.predict_text(
+                instruction,
+                progress_callback=inference_progress
+            )
+
             if not pred_name:
                 pred_name = "無法辨識"
                 confidence = 0.0
 
             dept_email = get_dept_email(pred_name) or "未設定"
-            doc.update_classification(doc_id, pred_name, confidence, dept_email)
-        except Exception as e:
-            # doc.update_classification(doc_id, "分類失敗", 0.0, "未設定")
-            print(f"文件 ID {doc_id} 分類失敗：{e}")
 
-def send_email():
-    documents = doc.get_documents_for_email()
-    for doc_id, di_filename, pdf_filename, folder_path, department, email in documents:
-        try:    
-            server = open_smtp()
-            if server is None:
-                return
-            send_one(server, email, f"[AI 公文分發] {di_filename}", f"部門：{department}\n附件：{di_filename}", folder_path)
-            doc.mark_email_sent(doc_id)
+            doc.update_classification(
+                doc_id,
+                pred_name,
+                confidence,
+                dept_email
+            )
+
+            success_count += 1
+
+            percent = MODEL_LOAD_WEIGHT + (doc_index / total_docs) * INFERENCE_WEIGHT
+            set_progress_percent(
+                percent,
+                f"Document classified {doc_index}/{total_docs}: {display_name}"
+            )
+
         except Exception as e:
-            print(f"文件 ID {doc_id} 寄信失敗：{e}")
+            failed_count += 1
+            error_msg = f"Document ID {doc_id} classification failed: {e}"
+            failed_messages.append(error_msg)
+            print(error_msg)
+
+            percent = MODEL_LOAD_WEIGHT + (doc_index / total_docs) * INFERENCE_WEIGHT
+            set_progress_percent(
+                percent,
+                f"Classification failed {doc_index}/{total_docs}: {display_name}"
+            )
+
+    load_documents()
+
+    finish_progress(
+        f"Classification completed: Success {success_count}, Failed {failed_count}"
+    )
+
+    msg = (
+        f"Classification completed.\n"
+        f"Success: {success_count}\n"
+        f"Failed: {failed_count}"
+    )
+
+    if failed_messages:
+        msg += "\n\nTop 5 failure reasons:\n" + "\n".join(failed_messages[:5])
+
+    messagebox.showinfo("Classification Results", msg)
 
 #endregion
 
@@ -434,7 +600,7 @@ load_documents()
 class CredentialsDialog(tk.Toplevel):
     def __init__(self, parent, default_user=""):
         super().__init__(parent)
-        self.title("寄件人憑證")
+        self.title("Sender's Credentials")
         self.configure(bg="#1E3A5F")
         self.resizable(False, False)
         self.result = None

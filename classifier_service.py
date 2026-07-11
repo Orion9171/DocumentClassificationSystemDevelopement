@@ -1,10 +1,11 @@
 # import dependencies
+from email import message
 import os
 import re
 import json
 import pickle
 from contextlib import nullcontext
-from typing import Dict, Tuple, Optional, List
+from typing import Dict, Tuple, Optional, List, Callable
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -220,7 +221,8 @@ def load_app_config(config_path: Optional[str] = None) -> dict:
         return json.load(f)
 # Model Deployment Service
 class ClassifierService:
-    def __init__(self, model_dir: Optional[str] = None, config_path: Optional[str] = None):
+    def __init__(self, model_dir: Optional[str] = None, config_path: Optional[str] = None, progress_callback: Optional[Callable[[int, int, str], None]] = None):
+        self.progress_callback = progress_callback
         self.base_path = os.path.dirname(os.path.abspath(__file__))
         self._setup_tesseract()
         # read config.json
@@ -256,8 +258,15 @@ class ClassifierService:
         self.model_ready = False
 
         self._load_all()
+        
+    def _progress(self, current: int, total: int, message: str):
+        if self.progress_callback:
+            self.progress_callback(current, total, message)
     # Load in the model
     def _load_all(self):
+        total_steps = 10
+        self._progress(0, total_steps, "Checking model folder")
+
         if not os.path.isdir(self.model_dir):
             raise FileNotFoundError(f"找不到模型資料夾：{self.model_dir}")
 
@@ -265,12 +274,16 @@ class ClassifierService:
         meta_path = os.path.join(self.model_dir, "model_meta.json")
         classifier_head_path = os.path.join(self.model_dir, "classifier_head.pt")
 
+        self._progress(1, total_steps, "Checking model files")
+
         if not os.path.exists(label_map_path):
             raise FileNotFoundError(f"找不到 label_map.json：{label_map_path}")
         if not os.path.exists(meta_path):
             raise FileNotFoundError(f"找不到 model_meta.json：{meta_path}")
         if not os.path.exists(classifier_head_path):
             raise FileNotFoundError(f"找不到 classifier_head.pt：{classifier_head_path}")
+
+        self._progress(2, total_steps, "Loading label map and metadata")
 
         with open(label_map_path, "r", encoding="utf-8") as f:
             lm = json.load(f)
@@ -287,6 +300,7 @@ class ClassifierService:
         max_chunks = int(self.meta.get("max_chunks", 4))
 
         # tokenizer
+        self._progress(3, total_steps, "Loading tokenizer")
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_dir, trust_remote_code=True)
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -299,7 +313,7 @@ class ClassifierService:
         # 先試 4bit（如果環境支援）
         backbone = None
         quant_loaded = False
-
+        self._progress(4, total_steps, "Preparing backbone model")
         if self.device == "cuda":
             try:
                 from transformers import BitsAndBytesConfig
@@ -313,6 +327,7 @@ class ClassifierService:
                 cfg = AutoConfig.from_pretrained(backbone_name, trust_remote_code=True)
                 cfg.use_cache = False
 
+                self._progress(5, total_steps, "Loading 4-bit backbone weights")
                 backbone = AutoModelForCausalLM.from_pretrained(
                     backbone_name,
                     config=cfg,
@@ -324,7 +339,8 @@ class ClassifierService:
                 print("[ClassifierService] 4bit backbone loaded.")
             except Exception as e:
                 print(f"[ClassifierService] 4bit 載入失敗，改用一般模式：{e}")
-
+                
+        self._progress(5, total_steps, "Loading backbone weights")
         if backbone is None:
             cfg = AutoConfig.from_pretrained(backbone_name, trust_remote_code=True)
             cfg.use_cache = False
@@ -338,6 +354,7 @@ class ClassifierService:
             print("[ClassifierService] full precision / half precision backbone loaded.")
 
         # LoRA adapter
+        self._progress(6, total_steps, "Loading LoRA adapter")
         backbone = PeftModel.from_pretrained(backbone, self.model_dir)
         backbone.eval()
 
@@ -357,11 +374,14 @@ class ClassifierService:
         )
 
         # 載入 classifier head
+        self._progress(7, total_steps, "Building classifier head")
+        self._progress(8, total_steps, "Loading classifier head weights")
         state = torch.load(classifier_head_path, map_location="cpu")
         self.clf.classifier.load_state_dict(state, strict=True)
         self.clf.to(self.device)
         self.clf.eval()
 
+        self._progress(9, total_steps, "Preparing chunking collator")
         self.chunk_collator = ChunkingCollator(
             tokenizer=self.tokenizer,
             chunk_len=chunk_len,
@@ -370,6 +390,7 @@ class ClassifierService:
         )
 
         self.model_ready = True
+        self._progress(10, total_steps, "Model ready")
         print("[ClassifierService] model ready.")
 
     def amp_context(self):
@@ -594,29 +615,52 @@ class ClassifierService:
 
     # Inference
     @torch.no_grad()
-    def predict_text(self, text: str) -> Tuple[str, float]:
+    def predict_text(
+        self,
+        text: str,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None
+    ) -> Tuple[str, float]:
+
+        def infer_progress(current: int, total: int, message: str):
+            if progress_callback:
+                progress_callback(current, total, message)
+
+        infer_total = 6
+
+        infer_progress(0, infer_total, "Checking model status")
+
         if not self.model_ready:
             raise RuntimeError("模型尚未成功載入。")
+
+        infer_progress(1, infer_total, "Preprocessing text")
         text = self.preprocess_text(text)
+
         if not text:
+            infer_progress(infer_total, infer_total, "Empty text, unable to classify")
             return "無法辨識", 0.0
 
+        infer_progress(2, infer_total, "Tokenizing and chunking text")
         example = {"instruction": text, "labels": 0}
         batch = self.chunk_collator([example])
 
+        infer_progress(3, infer_total, "Moving tensors to device")
         for k, v in batch.items():
             if isinstance(v, torch.Tensor):
                 batch[k] = v.to(self.device)
 
+        infer_progress(4, infer_total, "Running model inference")
         with self.amp_context():
             outputs = self.clf(**batch)
 
+        infer_progress(5, infer_total, "Computing softmax confidence")
         logits = outputs["logits"] if isinstance(outputs, dict) else outputs.logits
         probs = F.softmax(logits.float(), dim=-1)[0].detach().cpu().numpy()
 
         pred_id = int(np.argmax(probs))
         pred_label = self.id2label[pred_id]
         max_prob = float(probs[pred_id])
+
+        infer_progress(6, infer_total, f"Inference completed: {pred_label}")
 
         return pred_label, max_prob
 
@@ -626,14 +670,20 @@ class ClassifierService:
 
 _service: Optional[ClassifierService] = None
 
-def get_classifier_service() -> ClassifierService:
+def get_classifier_service(progress_callback: Optional[Callable[[int, int, str], None]] = None) -> ClassifierService:
     global _service
     if _service is None:
-        _service = ClassifierService()
+        _service = ClassifierService(progress_callback=progress_callback)
+    else:
+        _service.progress_callback = progress_callback
+        if progress_callback:
+            progress_callback(10, 10, "Model already loaded")
+
     return _service
 
-def classify_text(text: str) -> Tuple[str, float]:
-    return get_classifier_service().predict_text(text)
+def classify_text(text: str,progress_callback: Optional[Callable[[int, int, str], None]] = None) -> Tuple[str, float]:
+    service = get_classifier_service(progress_callback=progress_callback)
+    return service.predict_text(text, progress_callback=progress_callback)
 
 def classify_file(file_path: str) -> Tuple[str, float]:
     return get_classifier_service().classify_file(file_path)
