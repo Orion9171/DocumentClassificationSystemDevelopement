@@ -1,4 +1,4 @@
- # 本次執行快取 App 密碼 fjjm kkgm peth ymms
+# 本次執行快取 App 密碼 fjjm kkgm peth ymms
 
 
 import tkinter as tk
@@ -9,6 +9,9 @@ from tkcalendar import DateEntry
 from PIL import Image, ImageTk
 import sqlite3
 import os
+import threading
+import queue
+import traceback
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import random
@@ -55,6 +58,10 @@ doc.init_documents_table()
 # === Global Variables ===
 email_entries = {}
 uploaded_files = []
+
+# Background worker communication
+ui_queue = queue.Queue()
+classification_running = False
 
 #region UI
 
@@ -450,143 +457,216 @@ def upload_document_folder():
 
 #region Document Classification & Email Sending
 
-def classify_documents():
-    from classifier_service import get_classifier_service
+def start_classification():
+    """Start model loading and document classification in a background thread."""
+    global classification_running
+
+    if classification_running:
+        messagebox.showinfo("Reminder", "Classification is already running.")
+        return
 
     documents = doc.get_documents_for_classification()
-    total_docs = len(documents)
-
-    if total_docs == 0:
+    if not documents:
         reset_progress("No documents to classify")
         messagebox.showinfo(
             "Reminder",
             "There are currently no documents to classify.\n\n"
             "Possible reasons:\n"
             "1. No documents have been imported\n"
-            "2. All documents have already been classified\n"
-            "3. No unclassified data under the filter conditions"
+            "2. All documents have already been classified"
         )
         return
 
+    classification_running = True
+    btn_process_documents.configure(state="disabled")
+
+    progress_bar.configure(mode="indeterminate")
+    progress_value_var.set(0)
+    progress_text_var.set("Starting classification worker...")
+    progress_bar.start(12)
+
+    worker = threading.Thread(
+        target=classification_worker,
+        args=(documents,),
+        daemon=True,
+        name="document-classification-worker"
+    )
+    worker.start()
+
+
+def classification_worker(documents):
+    """
+    Runs outside the Tkinter main thread.
+    Never updates Tkinter widgets directly; all UI messages go through ui_queue.
+    """
+    from classifier_service import get_classifier_service
+
+    total_docs = len(documents)
     success_count = 0
     failed_count = 0
     failed_messages = []
 
-    # 整體分類進度設計：
-    # 0% ~ 30%：模型載入
-    # 30% ~ 100%：逐筆 inference
-    MODEL_LOAD_WEIGHT = 30
-    INFERENCE_WEIGHT = 70
+    MODEL_LOAD_WEIGHT = 30.0
+    INFERENCE_WEIGHT = 70.0
 
     def model_loading_progress(current, total, message):
-        if total <= 0:
-            percent = 0
-        else:
-            percent = (current / total) * MODEL_LOAD_WEIGHT
-
-        set_progress_percent(
-            percent,
-            f"Model loading: {message}"
-        )
+        # Model loading has long blocking steps, so the UI uses an animated bar.
+        stage_percent = 0.0 if total <= 0 else (current / total) * MODEL_LOAD_WEIGHT
+        ui_queue.put(("model_status", stage_percent, f"Model loading: {message}"))
 
     try:
-        # 第一次執行會真的載入模型；之後會直接回傳已載入的 service
+        ui_queue.put(("mode", "indeterminate"))
+        ui_queue.put(("status", "Preparing model loading..."))
+
         service = get_classifier_service(
             progress_callback=model_loading_progress
         )
-    except Exception as e:
-        reset_progress("Model loading failed")
-        messagebox.showerror("Model Loading Failed", str(e))
-        return
 
-    for doc_index, (doc_id, di_filename, pdf_filename, folder_path, instruction) in enumerate(documents, start=1):
-        display_name = di_filename or pdf_filename or f"Document ID {doc_id}"
+        # Model is ready. From here onward the progress is measurable.
+        ui_queue.put(("mode", "determinate"))
+        ui_queue.put(("progress", MODEL_LOAD_WEIGHT, "Model ready. Starting inference..."))
 
-        try:
-            if not instruction or not instruction.strip():
+        for doc_index, (doc_id, di_filename, pdf_filename, folder_path, instruction) in enumerate(documents, start=1):
+            display_name = di_filename or pdf_filename or f"Document ID {doc_id}"
+
+            try:
+                if not instruction or not instruction.strip():
+                    failed_count += 1
+                    failed_messages.append(f"Document ID {doc_id}: instruction is empty")
+                    percent = MODEL_LOAD_WEIGHT + (doc_index / total_docs) * INFERENCE_WEIGHT
+                    ui_queue.put(("progress", percent, f"Skipped empty instruction: {display_name}"))
+                    continue
+
+                def inference_progress(current, total, message):
+                    inner_ratio = 0.0 if total <= 0 else current / total
+                    completed_docs = doc_index - 1
+                    percent = MODEL_LOAD_WEIGHT + (
+                        (completed_docs + inner_ratio) / total_docs
+                    ) * INFERENCE_WEIGHT
+                    ui_queue.put((
+                        "progress",
+                        percent,
+                        f"Inference {doc_index}/{total_docs}: {display_name} | {message}"
+                    ))
+
+                pred_name, confidence = service.predict_text(
+                    instruction,
+                    progress_callback=inference_progress
+                )
+
+                if not pred_name:
+                    pred_name = "無法辨識"
+                    confidence = 0.0
+
+                dept_email = get_dept_email(pred_name) or "未設定"
+                doc.update_classification(
+                    doc_id,
+                    pred_name,
+                    confidence,
+                    dept_email
+                )
+
+                success_count += 1
+                percent = MODEL_LOAD_WEIGHT + (doc_index / total_docs) * INFERENCE_WEIGHT
+                ui_queue.put((
+                    "progress",
+                    percent,
+                    f"Document classified {doc_index}/{total_docs}: {display_name}"
+                ))
+
+            except Exception as e:
                 failed_count += 1
-                failed_messages.append(f"Document ID {doc_id}: instruction is empty")
+                error_msg = f"Document ID {doc_id} classification failed: {e}"
+                failed_messages.append(error_msg)
+                print(error_msg)
+                traceback.print_exc()
 
                 percent = MODEL_LOAD_WEIGHT + (doc_index / total_docs) * INFERENCE_WEIGHT
-                set_progress_percent(
+                ui_queue.put((
+                    "progress",
                     percent,
-                    f"Skipped empty instruction: {display_name}"
-                )
-                continue
+                    f"Classification failed {doc_index}/{total_docs}: {display_name}"
+                ))
 
-            def inference_progress(current, total, message):
-                if total <= 0:
-                    inner_ratio = 0
+        ui_queue.put((
+            "done",
+            success_count,
+            failed_count,
+            failed_messages
+        ))
+
+    except Exception as e:
+        traceback.print_exc()
+        ui_queue.put(("fatal_error", str(e)))
+
+
+def poll_background_events():
+    """Process worker messages on the Tkinter main thread."""
+    global classification_running
+
+    try:
+        while True:
+            event = ui_queue.get_nowait()
+            event_type = event[0]
+
+            if event_type == "mode":
+                mode = event[1]
+                progress_bar.stop()
+                progress_bar.configure(mode=mode)
+                if mode == "indeterminate":
+                    progress_bar.start(12)
                 else:
-                    inner_ratio = current / total
+                    progress_value_var.set(0)
 
-                completed_docs = doc_index - 1
+            elif event_type == "status":
+                progress_text_var.set(event[1])
 
-                percent = MODEL_LOAD_WEIGHT + (
-                    (completed_docs + inner_ratio) / total_docs
-                ) * INFERENCE_WEIGHT
+            elif event_type == "model_status":
+                _stage_percent, message = event[1], event[2]
+                # Keep the bar animated while showing the exact loading stage.
+                progress_text_var.set(message)
 
-                set_progress_percent(
-                    percent,
-                    f"Inference {doc_index}/{total_docs}: {display_name} | {message}"
+            elif event_type == "progress":
+                percent, message = event[1], event[2]
+                progress_bar.stop()
+                progress_bar.configure(mode="determinate")
+                progress_value_var.set(max(0.0, min(100.0, float(percent))))
+                progress_text_var.set(f"{message} ({percent:.1f}%)")
+
+            elif event_type == "done":
+                success_count, failed_count, failed_messages = event[1], event[2], event[3]
+                classification_running = False
+                progress_bar.stop()
+                progress_bar.configure(mode="determinate")
+                progress_value_var.set(100)
+                progress_text_var.set(
+                    f"Classification completed: Success {success_count}, Failed {failed_count}"
                 )
+                btn_process_documents.configure(state="normal")
+                load_documents()
 
-            inference_progress(0, 6, "Starting inference")
+                msg = (
+                    f"Classification completed.\n"
+                    f"Success: {success_count}\n"
+                    f"Failed: {failed_count}"
+                )
+                if failed_messages:
+                    msg += "\n\nTop 5 failure reasons:\n" + "\n".join(failed_messages[:5])
+                messagebox.showinfo("Classification Results", msg)
 
-            pred_name, confidence = service.predict_text(
-                instruction,
-                progress_callback=inference_progress
-            )
+            elif event_type == "fatal_error":
+                classification_running = False
+                progress_bar.stop()
+                progress_bar.configure(mode="determinate")
+                progress_value_var.set(0)
+                progress_text_var.set("Classification failed")
+                btn_process_documents.configure(state="normal")
+                messagebox.showerror("Classification Failed", event[1])
 
-            if not pred_name:
-                pred_name = "無法辨識"
-                confidence = 0.0
+    except queue.Empty:
+        pass
 
-            dept_email = get_dept_email(pred_name) or "未設定"
-
-            doc.update_classification(
-                doc_id,
-                pred_name,
-                confidence,
-                dept_email
-            )
-
-            success_count += 1
-
-            percent = MODEL_LOAD_WEIGHT + (doc_index / total_docs) * INFERENCE_WEIGHT
-            set_progress_percent(
-                percent,
-                f"Document classified {doc_index}/{total_docs}: {display_name}"
-            )
-
-        except Exception as e:
-            failed_count += 1
-            error_msg = f"Document ID {doc_id} classification failed: {e}"
-            failed_messages.append(error_msg)
-            print(error_msg)
-
-            percent = MODEL_LOAD_WEIGHT + (doc_index / total_docs) * INFERENCE_WEIGHT
-            set_progress_percent(
-                percent,
-                f"Classification failed {doc_index}/{total_docs}: {display_name}"
-            )
-
-    load_documents()
-
-    finish_progress(
-        f"Classification completed: Success {success_count}, Failed {failed_count}"
-    )
-
-    msg = (
-        f"Classification completed.\n"
-        f"Success: {success_count}\n"
-        f"Failed: {failed_count}"
-    )
-
-    if failed_messages:
-        msg += "\n\nTop 5 failure reasons:\n" + "\n".join(failed_messages[:5])
-
-    messagebox.showinfo("Classification Results", msg)
+    root.after(100, poll_background_events)
 
 #endregion
 
@@ -762,7 +842,13 @@ button_frame = tk.Frame(frame_center, bg="#00CACA", highlightthickness=0)
 button_frame.pack(pady=10)
 
 ttk.Button(button_frame, text="Search New Documents", command=process_new_documents, style="Primary.TButton").grid(row=0, column=2, padx=10)
-ttk.Button(button_frame, text="Process Documents", command=classify_documents, style="Primary.TButton").grid(row=0, column=3, padx=10)
+btn_process_documents = ttk.Button(
+    button_frame,
+    text="Process Documents",
+    command=start_classification,
+    style="Primary.TButton"
+)
+btn_process_documents.grid(row=0, column=3, padx=10)
 ttk.Button(button_frame, text="📂 選擇文件上傳", command=upload_document_folder, style="Dark.TButton").grid(row=0, column=1, padx=10)
 
 
@@ -836,6 +922,8 @@ btn_save_emails.configure(command=save_department_emails)
 #     messagebox.showinfo("測試寄信結果", "\n".join(summary))
 # ttk.Button(button_frame, text="📧 寄給自己（測試）", command=send_all_to_self, style="Success.TButton").grid(row=0, column=4, padx=10)
 
-# 啟動
+# 啟動背景事件輪詢
+root.after(100, poll_background_events)
 
+# 啟動
 root.mainloop()

@@ -340,8 +340,8 @@ class ClassifierService:
             except Exception as e:
                 print(f"[ClassifierService] 4bit 載入失敗，改用一般模式：{e}")
                 
-        self._progress(5, total_steps, "Loading backbone weights")
         if backbone is None:
+            self._progress(5, total_steps, "Loading backbone weights")
             cfg = AutoConfig.from_pretrained(backbone_name, trust_remote_code=True)
             cfg.use_cache = False
             backbone = AutoModelForCausalLM.from_pretrained(
@@ -664,9 +664,13 @@ class ClassifierService:
 
         return pred_label, max_prob
 
-    def classify_file(self, file_path: str) -> Tuple[str, float]:
+    def classify_file(
+        self,
+        file_path: str,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None
+    ) -> Tuple[str, float]:
         raw_text = self.extract_text_from_file(file_path)
-        return self.predict_text(raw_text)
+        return self.predict_text(raw_text, progress_callback=progress_callback)
 
 _service: Optional[ClassifierService] = None
 
@@ -685,5 +689,9 @@ def classify_text(text: str,progress_callback: Optional[Callable[[int, int, str]
     service = get_classifier_service(progress_callback=progress_callback)
     return service.predict_text(text, progress_callback=progress_callback)
 
-def classify_file(file_path: str) -> Tuple[str, float]:
-    return get_classifier_service().classify_file(file_path)
+def classify_file(
+    file_path: str,
+    progress_callback: Optional[Callable[[int, int, str], None]] = None
+) -> Tuple[str, float]:
+    service = get_classifier_service(progress_callback=progress_callback)
+    return service.classify_file(file_path, progress_callback=progress_callback)
