@@ -427,9 +427,77 @@ def load_documents():
         created_date=created_date,
         classified_date=classified_date
     )
-    for doc_id, di_filename, pdf_filename, folder_path, instruction, created_at, processed_at, department, confidence, email, email_sent in documents:
-        table.insert('', tk.END, values=(doc_id, di_filename, pdf_filename, department or "", f"{confidence:.2%}" if confidence else "", email or "",  "" if email=="" else "Yes" if email_sent else "No"))
 
+    for (
+        doc_id,
+        di_filename,
+        pdf_filename,
+        folder_path,
+        instruction,
+        created_at,
+        processed_at,
+        department,
+        confidence,
+        email,
+        email_sent
+    ) in documents:
+
+        table.insert(
+            "",
+            tk.END,
+            iid=str(doc_id),
+            values=(
+                doc_id,
+                di_filename,
+                pdf_filename,
+                department or "",
+                f"{confidence:.2%}" if confidence is not None else "",
+                email or "",
+                "" if not email else "Yes" if email_sent else "No"
+            )
+        )
+def update_document_row(
+    doc_id,
+    di_filename,
+    pdf_filename,
+    department,
+    confidence,
+    email,
+    email_sent=False
+):
+    """
+    只更新完成分類的那一列，不重新載入整張表格。
+    必須由 Tkinter 主執行緒呼叫。
+    """
+    row_id = str(doc_id)
+
+    values = (
+        doc_id,
+        di_filename,
+        pdf_filename,
+        department or "",
+        f"{confidence:.2%}" if confidence is not None else "",
+        email or "",
+        "" if not email else "Yes" if email_sent else "No"
+    )
+
+    if table.exists(row_id):
+        table.item(row_id, values=values)
+
+        # 讓剛完成的那一列自動出現在可視範圍
+        table.see(row_id)
+        table.selection_set(row_id)
+
+    else:
+        # 若該列目前不存在，例如表格剛被篩選或尚未載入
+        table.insert(
+            "",
+            tk.END,
+            iid=row_id,
+            values=values
+        )
+        table.see(row_id)
+        table.selection_set(row_id)
 def process_new_documents():
     crawler.process_and_move_files()
     load_documents()
@@ -565,9 +633,23 @@ def classification_worker(documents):
                     confidence,
                     dept_email
                 )
-
                 success_count += 1
-                percent = MODEL_LOAD_WEIGHT + (doc_index / total_docs) * INFERENCE_WEIGHT
+                # Every time a document is classified, send a message to the UI thread to update the table.
+                ui_queue.put((
+                    "document_result",
+                    doc_id,
+                    di_filename,
+                    pdf_filename,
+                    pred_name,
+                    confidence,
+                    dept_email,
+                    False
+                ))
+
+                percent = MODEL_LOAD_WEIGHT + (
+                    doc_index / total_docs
+                ) * INFERENCE_WEIGHT
+
                 ui_queue.put((
                     "progress",
                     percent,
@@ -628,21 +710,59 @@ def poll_background_events():
 
             elif event_type == "progress":
                 percent, message = event[1], event[2]
+
                 progress_bar.stop()
                 progress_bar.configure(mode="determinate")
-                progress_value_var.set(max(0.0, min(100.0, float(percent))))
-                progress_text_var.set(f"{message} ({percent:.1f}%)")
+
+                progress_value_var.set(
+                    max(0.0, min(100.0, float(percent)))
+                )
+
+                progress_text_var.set(
+                    f"{message} ({percent:.1f}%)"
+                )
+
+            elif event_type == "document_result":
+                (
+                    doc_id,
+                    di_filename,
+                    pdf_filename,
+                    department,
+                    confidence,
+                    email,
+                    email_sent
+                ) = event[1:]
+
+                update_document_row(
+                    doc_id=doc_id,
+                    di_filename=di_filename,
+                    pdf_filename=pdf_filename,
+                    department=department,
+                    confidence=confidence,
+                    email=email,
+                    email_sent=email_sent
+                )
 
             elif event_type == "done":
-                success_count, failed_count, failed_messages = event[1], event[2], event[3]
+                success_count, failed_count, failed_messages = (
+                    event[1],
+                    event[2],
+                    event[3]
+                )
+
                 classification_running = False
                 progress_bar.stop()
                 progress_bar.configure(mode="determinate")
                 progress_value_var.set(100)
+
                 progress_text_var.set(
-                    f"Classification completed: Success {success_count}, Failed {failed_count}"
+                    f"Classification completed: "
+                    f"Success {success_count}, Failed {failed_count}"
                 )
+
                 btn_process_documents.configure(state="normal")
+
+                # 可保留，作為最後一次資料庫與 UI 同步
                 load_documents()
 
                 msg = (
@@ -650,8 +770,13 @@ def poll_background_events():
                     f"Success: {success_count}\n"
                     f"Failed: {failed_count}"
                 )
+
                 if failed_messages:
-                    msg += "\n\nTop 5 failure reasons:\n" + "\n".join(failed_messages[:5])
+                    msg += (
+                        "\n\nTop 5 failure reasons:\n"
+                        + "\n".join(failed_messages[:5])
+                    )
+
                 messagebox.showinfo("Classification Results", msg)
 
             elif event_type == "fatal_error":
