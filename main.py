@@ -12,7 +12,6 @@ import os
 import threading
 import queue
 import traceback
-
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import random
 
@@ -23,8 +22,6 @@ from email.mime.base import MIMEBase
 from email import encoders
 import re
 from collections import OrderedDict
-
-
 import department as dpt
 import documents as doc
 import uploads as upl
@@ -107,8 +104,8 @@ def apply_theme(root):
           foreground=[('disabled', '#AAAAAA')])
 
     root.configure(bg=BG)
-    root.tk_setPalette(background=BG, foreground=FG,
-                       activeBackground=SELBG, activeForeground=FG,
+    root.tk_setPalette(background=BG, foreground="#000000",
+                       activeBackground=SELBG, activeForeground="#FFFFFF",
                        highlightColor=BG)
 
     style.configure(".", background=BG, foreground=FG)
@@ -126,8 +123,21 @@ def apply_theme(root):
     style.configure("TEntry", fieldbackground="#FFFFFF", foreground="#0F172A", insertcolor="#0F172A")
 
     # COmbobox（用 ttk.Combobox，避免 mac 強制白底）
-    style.configure("TCombobox", foreground="#0F172A", fieldbackground="white")
+    style.configure(
+        "TCombobox",
+        foreground="white",              # Displayed text color
+        fieldbackground="white",       # Input field background
+        background="#1E3A5F",            # Button background
+        arrowcolor="white",              # Dropdown arrow
+        selectforeground="white",
+        selectbackground="#007ACC"
+    )
 
+    # Windows 下拉清單(Listbox)顏色
+    root.option_add("*TCombobox*Listbox.background", "#1E3A5F")
+    root.option_add("*TCombobox*Listbox.foreground", "white")
+    root.option_add("*TCombobox*Listbox.selectBackground", "#007ACC")
+    root.option_add("*TCombobox*Listbox.selectForeground", "white")
     # Treeview（表格）
     style.configure("Treeview", background=FG, foreground=SELBG, fieldbackground=FG)
     style.configure("Treeview.Heading", 
@@ -135,7 +145,6 @@ def apply_theme(root):
                 background=BG,        
                 font=('Helvetica', 10, 'bold')) # Optional: Makes text bold
     
-
 # === Left side: Department Email Management ===
 frame_left = tk.Frame(root, width=400, bg="#1E3A5F", highlightthickness=0)
 frame_left.pack(side="left", fill="y")
@@ -237,7 +246,28 @@ def clear_control(widget):
         widget.delete(0, "end")  # Clears DateEntry and standard Entry fields
 
 tk.Label(frame_filters, text="Date Created", anchor="w", bg=PRIMARY, width=15).grid(row=1, column=0, padx=5, pady=2, sticky="w")
-created_date_entry = DateEntry(frame_filters, width=22, borderwidth=2, date_pattern='yyyy-mm-dd')
+created_date_entry = DateEntry(
+    frame_filters,
+    width=22,
+    borderwidth=2,
+    date_pattern="yyyy-mm-dd",
+    foreground="black",              # 輸入框文字
+    background="#007ACC",            # 月份標題列背景
+    headersbackground="#E0E0E0",     # 星期標題背景
+    headersforeground="black",       # 星期文字
+    normalbackground="white",        # 一般日期背景
+    normalforeground="black",        # 一般日期文字
+    weekendbackground="white",       # 週末日期背景
+    weekendforeground="black",       # 週末日期文字
+    selectbackground="#007ACC",      # 選取日期背景
+    selectforeground="white",        # 選取日期文字
+    disabledbackground="#D9D9D9",
+    disabledforeground="#666666",
+    othermonthbackground="#F2F2F2",
+    othermonthforeground="#777777",
+    othermonthwebackground="#F2F2F2",
+    othermonthweforeground="#777777"
+)
 created_date_entry.grid(row=1, column=1, padx=5, pady=2, sticky="w")
 created_date_entry.delete(0, tk.END)  # Clear the default date
 # Button to clear ONLY the date picker
@@ -250,7 +280,28 @@ btn_clear_date.grid(row=1, column=1, padx=5, pady=2, sticky="e")
 
 
 tk.Label(frame_filters, text="Date Classified", anchor="w", bg=PRIMARY, width=15).grid(row=1, column=3, padx=5, pady=2, sticky="w")
-classified_date_entry = DateEntry(frame_filters, width=22, borderwidth=2, date_pattern='yyyy-mm-dd')
+classified_date_entry = DateEntry(
+    frame_filters,
+    width=22,
+    borderwidth=2,
+    date_pattern="yyyy-mm-dd",
+    foreground="black",
+    background="#007ACC",
+    headersbackground="#E0E0E0",
+    headersforeground="black",
+    normalbackground="white",
+    normalforeground="black",
+    weekendbackground="white",
+    weekendforeground="black",
+    selectbackground="#007ACC",
+    selectforeground="white",
+    disabledbackground="#D9D9D9",
+    disabledforeground="#666666",
+    othermonthbackground="#F2F2F2",
+    othermonthforeground="#777777",
+    othermonthwebackground="#F2F2F2",
+    othermonthweforeground="#777777"
+)
 classified_date_entry.grid(row=1, column=4, padx=5, pady=2, sticky="w")
 classified_date_entry.delete(0, tk.END)  # Clear the default date
 btn_clear_classified_date = ttk.Button(
