@@ -575,6 +575,16 @@ def upload_document_folder():
 #endregion
 
 #region Document Classification & Email Sending
+def set_document_action_buttons_state(state):
+    """
+    Controls the state of document import, search, and classification buttons simultaneously.
+    The state can be:
+    "normal"
+    "disabled"
+    """
+    btn_upload_documents.configure(state=state)
+    btn_search_new_documents.configure(state=state)
+    btn_process_documents.configure(state=state)
 
 def start_classification():
     """Start model loading and document classification in a background thread."""
@@ -597,21 +607,34 @@ def start_classification():
         return
 
     classification_running = True
-    btn_process_documents.configure(state="disabled")
+    set_document_action_buttons_state("disabled")
 
     progress_bar.configure(mode="indeterminate")
     progress_value_var.set(0)
     progress_text_var.set("Starting classification worker...")
     progress_bar.start(12)
 
-    worker = threading.Thread(
-        target=classification_worker,
-        args=(documents,),
-        daemon=True,
-        name="document-classification-worker"
-    )
-    worker.start()
+    try:
+        worker = threading.Thread(
+            target=classification_worker,
+            args=(documents,),
+            daemon=True,
+            name="document-classification-worker"
+        )
+        worker.start()
+    except Exception as e:
+        classification_running = False
+        progress_bar.stop()
+        progress_bar.configure(mode="determinate")
+        progress_value_var.set(0)
+        progress_text_var.set("Unable to start classification")
 
+        set_document_action_buttons_state("normal")
+
+        messagebox.showerror(
+            "Classification Start Failed",
+            str(e)
+        )
 
 def classification_worker(documents):
     """
@@ -811,7 +834,7 @@ def poll_background_events():
                     f"Success {success_count}, Failed {failed_count}"
                 )
 
-                btn_process_documents.configure(state="normal")
+                set_document_action_buttons_state("normal")
 
                 # 可保留，作為最後一次資料庫與 UI 同步
                 load_documents()
@@ -836,7 +859,7 @@ def poll_background_events():
                 progress_bar.configure(mode="determinate")
                 progress_value_var.set(0)
                 progress_text_var.set("Classification failed")
-                btn_process_documents.configure(state="normal")
+                set_document_action_buttons_state("normal")
                 messagebox.showerror("Classification Failed", event[1])
 
     except queue.Empty:
@@ -1013,11 +1036,33 @@ def send_multi(server, recipients, dept_name, files_chunk, path_map):
 
     server.send_message(msg)
     
-# === 右側按鈕列（背景與右半一致 #00CACA） ===
-button_frame = tk.Frame(frame_center, bg="#00CACA", highlightthickness=0)
+# === right side pannel button settings ===
+button_frame = tk.Frame(
+    frame_center,
+    bg="#00CACA",
+    highlightthickness=0
+)
 button_frame.pack(pady=10)
 
-ttk.Button(button_frame, text="Search New Documents", command=process_new_documents, style="Primary.TButton").grid(row=0, column=2, padx=10)
+# file upload button
+btn_upload_documents = ttk.Button(
+    button_frame,
+    text="📂 Upload File Folder",
+    command=upload_document_folder,
+    style="Dark.TButton"
+)
+btn_upload_documents.grid(row=0, column=1, padx=10)
+
+# Search New Documents
+btn_search_new_documents = ttk.Button(
+    button_frame,
+    text="Search New Documents",
+    command=process_new_documents,
+    style="Primary.TButton"
+)
+btn_search_new_documents.grid(row=0, column=2, padx=10)
+
+# Process Documents
 btn_process_documents = ttk.Button(
     button_frame,
     text="Process Documents",
@@ -1025,8 +1070,6 @@ btn_process_documents = ttk.Button(
     style="Primary.TButton"
 )
 btn_process_documents.grid(row=0, column=3, padx=10)
-ttk.Button(button_frame, text="📂 選擇文件上傳", command=upload_document_folder, style="Dark.TButton").grid(row=0, column=1, padx=10)
-
 
 ttk.Button(frame_filters, text="Search",  style="Success.TButton", command=load_documents).grid(row=2, column=0, padx=10)
 
