@@ -836,7 +836,6 @@ def poll_background_events():
 
                 set_document_action_buttons_state("normal")
 
-                # 可保留，作為最後一次資料庫與 UI 同步
                 load_documents()
 
                 msg = (
