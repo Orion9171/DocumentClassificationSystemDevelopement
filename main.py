@@ -756,6 +756,33 @@ def classification_worker(documents):
         ui_queue.put(("fatal_error", str(e)))
 
 
+
+def release_model_after_batch():
+    """
+    使用者關閉分類結果視窗後，在背景執行緒卸載模型並釋放 GPU。
+    此函式不直接操作 Tkinter；完成後透過 ui_queue 通知主執行緒。
+    """
+    try:
+        from classifier_service import release_classifier_service
+
+        released = release_classifier_service()
+
+        if released:
+            ui_queue.put((
+                "model_released",
+                "Classification completed. Model and GPU memory released."
+            ))
+        else:
+            ui_queue.put((
+                "model_released",
+                "Classification completed. No loaded model needed to be released."
+            ))
+
+    except Exception as e:
+        traceback.print_exc()
+        ui_queue.put(("model_release_error", str(e)))
+
+
 def poll_background_events():
     """Process worker messages on the Tkinter main thread."""
     global classification_running
@@ -824,7 +851,6 @@ def poll_background_events():
                     event[3]
                 )
 
-                classification_running = False
                 progress_bar.stop()
                 progress_bar.configure(mode="determinate")
                 progress_value_var.set(100)
@@ -834,7 +860,9 @@ def poll_background_events():
                     f"Success {success_count}, Failed {failed_count}"
                 )
 
-                set_document_action_buttons_state("normal")
+                # 分類雖已完成，但模型尚未釋放。
+                # 保持三個文件操作按鈕停用，避免清理期間再次執行。
+                set_document_action_buttons_state("disabled")
 
                 load_documents()
 
@@ -850,7 +878,43 @@ def poll_background_events():
                         + "\n".join(failed_messages[:5])
                     )
 
+                # showinfo 會阻塞到使用者按下「確定」。
                 messagebox.showinfo("Classification Results", msg)
+
+                progress_bar.stop()
+                progress_bar.configure(mode="indeterminate")
+                progress_text_var.set("Releasing model and GPU memory...")
+                progress_bar.start(12)
+
+                threading.Thread(
+                    target=release_model_after_batch,
+                    daemon=True,
+                    name="model-release-worker"
+                ).start()
+
+            elif event_type == "model_released":
+                classification_running = False
+                progress_bar.stop()
+                progress_bar.configure(mode="determinate")
+                progress_value_var.set(100)
+                progress_text_var.set(event[1])
+                set_document_action_buttons_state("normal")
+
+            elif event_type == "model_release_error":
+                classification_running = False
+                progress_bar.stop()
+                progress_bar.configure(mode="determinate")
+                progress_value_var.set(100)
+                progress_text_var.set(
+                    "Classification completed, but GPU memory release failed"
+                )
+                set_document_action_buttons_state("normal")
+
+                messagebox.showwarning(
+                    "GPU Release Warning",
+                    "Classification completed successfully, but model/GPU cleanup failed.\n\n"
+                    + event[1]
+                )
 
             elif event_type == "fatal_error":
                 classification_running = False

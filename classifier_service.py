@@ -2,6 +2,7 @@
 from email import message
 import os
 import re
+import gc
 import json
 import pickle
 from contextlib import nullcontext
@@ -99,8 +100,11 @@ class ChunkPoolingClassifier(nn.Module):
         out = base(
             input_ids=flat_ids,
             attention_mask=flat_attn,
+            # CausalLM 輸出沒有 last_hidden_state；
+            # 此分類頭需要 hidden_states[-1] 做 pooling。
             output_hidden_states=True,
             return_dict=True,
+            use_cache=False,
         )
 
         token_hidden = getattr(out, "last_hidden_state", None)
@@ -673,6 +677,78 @@ class ClassifierService:
         return self.predict_text(raw_text, progress_callback=progress_callback)
 
 _service: Optional[ClassifierService] = None
+
+def release_classifier_service() -> bool:
+    """
+    釋放上一批保留的分類模型與 CUDA 記憶體。
+
+    使用時機：整批分類完成、使用者關閉結果視窗之後。
+    下一批分類會由 get_classifier_service() 自動重新載入模型。
+
+    Returns:
+        bool: True 代表確實釋放了上一個 service；False 代表沒有舊模型。
+    """
+    global _service
+
+    if _service is None:
+        return False
+
+    print("[ClassifierService] Releasing previous batch model...")
+
+    # 先把 singleton 指標清掉，避免後續程式仍取得舊 service。
+    service = _service
+    _service = None
+
+    try:
+        service.model_ready = False
+        service.progress_callback = None
+
+        # ChunkingCollator 會持有 tokenizer 參考，先解除。
+        if getattr(service, "chunk_collator", None) is not None:
+            try:
+                service.chunk_collator.tok = None
+            except Exception:
+                pass
+            service.chunk_collator = None
+
+        # ChunkPoolingClassifier.encoder 會持有完整 PEFT/Llama backbone。
+        if getattr(service, "clf", None) is not None:
+            try:
+                service.clf.encoder = None
+            except Exception:
+                pass
+            service.clf = None
+
+        service.tokenizer = None
+        service.id2label = {}
+        service.label2id = {}
+        service.meta = {}
+
+    finally:
+        del service
+        gc.collect()
+
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.synchronize()
+            except Exception:
+                pass
+
+            torch.cuda.empty_cache()
+
+            try:
+                torch.cuda.ipc_collect()
+            except Exception:
+                pass
+
+            print(
+                "[ClassifierService] GPU after release: "
+                f"allocated={torch.cuda.memory_allocated() / 1024**2:.1f} MB, "
+                f"reserved={torch.cuda.memory_reserved() / 1024**2:.1f} MB"
+            )
+
+    print("[ClassifierService] Previous batch model released.")
+    return True
 
 def get_classifier_service(progress_callback: Optional[Callable[[int, int, str], None]] = None) -> ClassifierService:
     global _service
