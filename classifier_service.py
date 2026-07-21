@@ -618,12 +618,19 @@ class ClassifierService:
         return subject
 
     # Inference
-    @torch.no_grad()
+    @torch.inference_mode()
     def predict_text(
         self,
         text: str,
         progress_callback: Optional[Callable[[int, int, str], None]] = None
     ) -> Tuple[str, float]:
+        """
+        對單一文件執行分類。
+
+        每次推論結束後只釋放該文件產生的暫存 tensor，
+        不會卸載模型；整批完成並關閉結果視窗後，
+        再由 release_classifier_service() 完整釋放模型與 GPU。
+        """
 
         def infer_progress(current: int, total: int, message: str):
             if progress_callback:
@@ -631,42 +638,98 @@ class ClassifierService:
 
         infer_total = 6
 
-        infer_progress(0, infer_total, "Checking model status")
+        # 預先宣告，確保推論途中發生例外時 finally 仍可安全清理。
+        example = None
+        batch = None
+        outputs = None
+        logits = None
+        probs_tensor = None
+        probs = None
 
-        if not self.model_ready:
-            raise RuntimeError("模型尚未成功載入。")
+        try:
+            infer_progress(0, infer_total, "Checking model status")
 
-        infer_progress(1, infer_total, "Preprocessing text")
-        text = self.preprocess_text(text)
+            if not self.model_ready or self.clf is None:
+                raise RuntimeError("模型尚未成功載入。")
 
-        if not text:
-            infer_progress(infer_total, infer_total, "Empty text, unable to classify")
-            return "無法辨識", 0.0
+            infer_progress(1, infer_total, "Preprocessing text")
+            text = self.preprocess_text(text)
 
-        infer_progress(2, infer_total, "Tokenizing and chunking text")
-        example = {"instruction": text, "labels": 0}
-        batch = self.chunk_collator([example])
+            if not text:
+                infer_progress(
+                    infer_total,
+                    infer_total,
+                    "Empty text, unable to classify"
+                )
+                return "無法辨識", 0.0
 
-        infer_progress(3, infer_total, "Moving tensors to device")
-        for k, v in batch.items():
-            if isinstance(v, torch.Tensor):
-                batch[k] = v.to(self.device)
+            infer_progress(2, infer_total, "Tokenizing and chunking text")
+            example = {"instruction": text, "labels": 0}
+            batch = self.chunk_collator([example])
 
-        infer_progress(4, infer_total, "Running model inference")
-        with self.amp_context():
-            outputs = self.clf(**batch)
+            infer_progress(3, infer_total, "Moving tensors to device")
+            for key, value in batch.items():
+                if isinstance(value, torch.Tensor):
+                    batch[key] = value.to(
+                        self.device,
+                        non_blocking=True
+                    )
 
-        infer_progress(5, infer_total, "Computing softmax confidence")
-        logits = outputs["logits"] if isinstance(outputs, dict) else outputs.logits
-        probs = F.softmax(logits.float(), dim=-1)[0].detach().cpu().numpy()
+            infer_progress(4, infer_total, "Running model inference")
+            with self.amp_context():
+                outputs = self.clf(**batch)
 
-        pred_id = int(np.argmax(probs))
-        pred_label = self.id2label[pred_id]
-        max_prob = float(probs[pred_id])
+            infer_progress(5, infer_total, "Computing softmax confidence")
+            logits = (
+                outputs["logits"]
+                if isinstance(outputs, dict)
+                else outputs.logits
+            )
 
-        infer_progress(6, infer_total, f"Inference completed: {pred_label}")
+            probs_tensor = F.softmax(
+                logits.float(),
+                dim=-1
+            )[0]
 
-        return pred_label, max_prob
+            probs = probs_tensor.detach().cpu().numpy()
+
+            pred_id = int(np.argmax(probs))
+            pred_label = self.id2label[pred_id]
+            max_prob = float(probs[pred_id])
+
+            infer_progress(
+                6,
+                infer_total,
+                f"Inference completed: {pred_label}"
+            )
+
+            return pred_label, max_prob
+
+        finally:
+            # 解除本次文件推論所建立的 GPU tensor 參考。
+            if isinstance(batch, dict):
+                for key in list(batch.keys()):
+                    batch[key] = None
+                batch.clear()
+
+            outputs = None
+            logits = None
+            probs_tensor = None
+            probs = None
+            example = None
+            batch = None
+
+            # 回收 Python 暫存物件與 CUDA allocator 中未使用的區塊。
+            gc.collect()
+
+            if torch.cuda.is_available():
+                try:
+                    torch.cuda.empty_cache()
+                except Exception as cleanup_error:
+                    print(
+                        "[ClassifierService] Per-document CUDA cleanup warning: "
+                        f"{cleanup_error}"
+                    )
 
     def classify_file(
         self,
@@ -693,7 +756,14 @@ def release_classifier_service() -> bool:
     if _service is None:
         return False
 
-    print("[ClassifierService] Releasing previous batch model...")
+    print("[ClassifierService] Releasing model after completed batch...")
+
+    if torch.cuda.is_available():
+        print(
+            "[ClassifierService] GPU before release: "
+            f"allocated={torch.cuda.memory_allocated() / 1024**2:.1f} MB, "
+            f"reserved={torch.cuda.memory_reserved() / 1024**2:.1f} MB"
+        )
 
     # 先把 singleton 指標清掉，避免後續程式仍取得舊 service。
     service = _service
@@ -747,7 +817,7 @@ def release_classifier_service() -> bool:
                 f"reserved={torch.cuda.memory_reserved() / 1024**2:.1f} MB"
             )
 
-    print("[ClassifierService] Previous batch model released.")
+    print("[ClassifierService] Model and GPU memory released after batch.")
     return True
 
 def get_classifier_service(progress_callback: Optional[Callable[[int, int, str], None]] = None) -> ClassifierService:

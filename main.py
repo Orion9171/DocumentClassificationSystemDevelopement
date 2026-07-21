@@ -753,6 +753,14 @@ def classification_worker(documents):
 
     except Exception as e:
         traceback.print_exc()
+
+        # 若模型載入後發生整批層級錯誤，仍嘗試釋放模型與 GPU。
+        try:
+            from classifier_service import release_classifier_service
+            release_classifier_service()
+        except Exception as release_error:
+            print(f"Fatal-error GPU cleanup failed: {release_error}")
+
         ui_queue.put(("fatal_error", str(e)))
 
 
