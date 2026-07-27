@@ -1,13 +1,9 @@
-# 本次執行快取 App 密碼 fjjm kkgm peth ymms
-
-
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from tkinter import ttk
 from matplotlib import style
 from tkcalendar import DateEntry 
 from PIL import Image, ImageTk
-import sqlite3
 import os
 import threading
 import queue
@@ -15,32 +11,19 @@ import traceback
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import random
 
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
-import re
-from collections import OrderedDict
 import department as dpt
 import documents as doc
 import uploads as upl
 import utils as utl
-import doc_crawler as crawler   
+import doc_crawler as crawler
+import email_service
 # === BASE Settings ===
 base_path = os.path.dirname(os.path.abspath(__file__))
 config_path = os.path.join(base_path, "config.json")
 
 config_data = utl.load_config(config_path)
-SMTP_HOST = config_data['smtp_host']
-SMTP_PORT = config_data['smtp_port']
-_SMTP_USER = config_data['smtp_user']
-_SMTP_PASS = config_data['smtp_pass']
-_SENDER_EMAIL = config_data['sender_email']
 db_path = config_data['db_path']
 upload_dir = config_data['upload_dir']
-
-MAX_MAIL_BYTES = 15 * 1024 * 1024
 
 DB_PATH = os.path.join(base_path, db_path)
 UPLOAD_DIR = os.path.join(base_path, upload_dir)
@@ -574,7 +557,7 @@ def upload_document_folder():
         messagebox.showerror("Import Failed", str(e))
 #endregion
 
-#region Document Classification & Email Sending
+#region Document Classification
 def set_document_action_buttons_state(state):
     """
     Controls the state of document import, search, and classification buttons simultaneously.
@@ -585,6 +568,7 @@ def set_document_action_buttons_state(state):
     btn_upload_documents.configure(state=state)
     btn_search_new_documents.configure(state=state)
     btn_process_documents.configure(state=state)
+    btn_email_management.configure(state=state)
 
 def start_classification():
     """Start model loading and document classification in a background thread."""
@@ -945,168 +929,21 @@ def poll_background_events():
 load_departments()
 # load_records()
 load_documents()
-    
-# ==== Customize the "Sender's Credentials" dialog box (including OK/Cancel) ====
-class CredentialsDialog(tk.Toplevel):
-    def __init__(self, parent, default_user=""):
-        super().__init__(parent)
-        self.title("Sender's Credentials")
-        self.configure(bg="#1E3A5F")
-        self.resizable(False, False)
-        self.result = None
-        self.grab_set()   # 變成 modal
-        self.transient(parent)
-
-        tk.Label(self, text="寄件人 Gmail：", bg="#1E3A5F", fg="white").grid(row=0, column=0, padx=12, pady=(12,6), sticky="e")
-        tk.Label(self, text="應用程式密碼：", bg="#1E3A5F", fg="white").grid(row=1, column=0, padx=12, pady=6, sticky="e")
-
-        self.var_email = tk.StringVar(value=default_user)
-        self.var_app   = tk.StringVar()
-
-        e1 = ttk.Entry(self, width=32, textvariable=self.var_email)
-        e2 = ttk.Entry(self, width=32, textvariable=self.var_app, show="*")
-        e1.grid(row=0, column=1, padx=12, pady=(12,6))
-        e2.grid(row=1, column=1, padx=12, pady=6)
-
-        btns = tk.Frame(self, bg="#1E3A5F")
-        btns.grid(row=2, column=0, columnspan=2, pady=12)
-        ttk.Button(btns, text="取消", style="Danger.TButton", command=self.on_cancel).pack(side="left", padx=6)
-        ttk.Button(btns, text="OK",   style="Success.TButton", command=self.on_ok).pack(side="left", padx=6)
-
-        self.bind("<Return>", lambda _: self.on_ok())
-        self.bind("<Escape>", lambda _: self.on_cancel())
-
-        # 置中
-        self.update_idletasks()
-        x = parent.winfo_rootx() + (parent.winfo_width() // 2) - (self.winfo_width() // 2)
-        y = parent.winfo_rooty() + (parent.winfo_height() // 2) - (self.winfo_height() // 2)
-        self.geometry(f"+{x}+{y}")
-
-        e1.focus_set()
-
-    def on_ok(self):
-        email = self.var_email.get().strip()
-        app   = (self.var_app.get() or "").replace(" ", "")
-        if not email or not app:
-            messagebox.showwarning("欄位不完整", "請輸入寄件人 Gmail 與應用程式密碼。", parent=self)
-            return
-        self.result = (email, app)
-        self.destroy()
-
-    def on_cancel(self):
-        self.result = None
-        self.destroy()
-
-def ask_credentials(default_user=""):
-    dlg = CredentialsDialog(root, default_user=default_user)
-    root.wait_window(dlg)
-    return dlg.result  # (email, app_password) 或 None（取消）
-
-
-def open_smtp(default_user=""):
-    global _SMTP_USER, _SMTP_PASS
-
-    server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20)
-    server.ehlo()
-    server.starttls()
-    server.login(_SMTP_USER, _SMTP_PASS)
-    return server
-
-def send_one(server, to_email, subject, body, attachment_path=None):
-    msg = MIMEMultipart()
-    msg["From"] = _SMTP_USER
-    msg["To"] = to_email
-    msg["Subject"] = subject
-    msg.attach(MIMEText(body, "plain", "utf-8"))
-    if attachment_path and os.path.exists(attachment_path):
-        with open(attachment_path, "rb") as f:
-            part = MIMEBase("application", "octet-stream")
-            part.set_payload(f.read())
-        encoders.encode_base64(part)
-        part.add_header("Content-Disposition", f"attachment; filename={os.path.basename(attachment_path)}")
-        msg.attach(part)
-    server.send_message(msg)
-
-def get_dept_email(name: str) -> str:
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT email FROM departments WHERE name=?", (name,))
-    row = c.fetchone()
-    conn.close()
-    return (row[0] or "").strip() if row else ""
-
-def parse_recipients(raw: str):
-    """支援逗號、分號、空白、換行、頓號分隔；自動過濾空字串。"""
-    if not raw:
-        return []
-    parts = re.split(r'[;,\s、]+', str(raw))
-    return [p.strip() for p in parts if p.strip() and '@' in p]
-
-def group_by_department(classified_rows):
+# Email management window region
+def open_email_management():
     """
-    classified_rows: [(fname, dept_name, dept_email, score), ...]
-    回傳 OrderedDict key=(dept_name, dept_email) -> [(fname, score), ...]
-    """
-    groups = OrderedDict()
-    for fname, dname, email, score in classified_rows:
-        groups.setdefault((dname, email), []).append((fname, score))
-    return groups
+    Open the Email Treeview window.
 
-def split_by_total_size(file_list, path_map, max_bytes=MAX_MAIL_BYTES):
+    SMTP credentials are loaded from config.json.  The window refreshes the
+    main document table after a successful send.
     """
-    同一部門的多附件依總大小切批。
-    file_list: [(fname, score), ...]
-    path_map:  {fname: filepath}
-    回傳: [[(fname, score), ...], ...]
-    """
-    batches, cur, cur_size = [], [], 0
-    for fname, score in file_list:
-        fpath = path_map.get(fname)
-        if not fpath or not os.path.exists(fpath):
-            continue
-        size = os.path.getsize(fpath)
-        if size > max_bytes:
-            # 太大的單檔獨立一封（照樣寄）
-            batches.append([(fname, score)])
-            continue
-        if cur_size + size > max_bytes and cur:
-            batches.append(cur)
-            cur, cur_size = [], 0
-        cur.append((fname, score))
-        cur_size += size
-    if cur:
-        batches.append(cur)
-    return batches
+    email_service.open_email_window(
+        parent=root,
+        config_path=config_path,
+        on_email_sent=load_documents,
+    )
 
-def send_multi(server, recipients, dept_name, files_chunk, path_map):
-    """
-    recipients: ["a@x", "b@y"]
-    files_chunk: [(fname, score), ...]
-    """
-    subject = f"[AI 公文分發] {dept_name}（{len(files_chunk)} 檔）"
-    lines = [f"部門：{dept_name}", "附件："]
-    lines += [f"• {fname}" for fname, _ in files_chunk]
-    body = "\n".join(lines)
 
-    msg = MIMEMultipart()
-    msg["From"] = _SMTP_USER
-    msg["To"] = ", ".join(recipients)
-    msg["Subject"] = subject
-    msg.attach(MIMEText(body, "plain", "utf-8"))
-
-    for fname, _ in files_chunk:
-        fpath = path_map.get(fname)
-        if not fpath or not os.path.exists(fpath):
-            continue
-        with open(fpath, "rb") as f:
-            part = MIMEBase("application", "octet-stream")
-            part.set_payload(f.read())
-        encoders.encode_base64(part)
-        part.add_header("Content-Disposition", f"attachment; filename={os.path.basename(fpath)}")
-        msg.attach(part)
-
-    server.send_message(msg)
-    
 # === right side pannel button settings ===
 button_frame = tk.Frame(
     frame_center,
@@ -1142,75 +979,19 @@ btn_process_documents = ttk.Button(
 )
 btn_process_documents.grid(row=0, column=3, padx=10)
 
+# Email management Treeview
+btn_email_management = ttk.Button(
+    button_frame,
+    text="Send Email",
+    command=open_email_management,
+    style="Success.TButton"
+)
+btn_email_management.grid(row=0, column=4, padx=10)
+
 ttk.Button(frame_filters, text="Search",  style="Success.TButton", command=load_documents).grid(row=2, column=0, padx=10)
-
-# === Email Function Area (Load/Save/Delete Department)） ===
-
-
+# End region
+# === Department Email save action ===
 btn_save_emails.configure(command=save_department_emails)
-
-
-# === Email sent to oneself (recipient reads "myself" on the left; sender asks once on the spot). ===
-# def send_all_to_self():
-#     # 收件人 = 左側 departments 中的 "myself"
-#     my_email = get_dept_email("myself")
-#     if not my_email or "@" not in my_email:
-#         messagebox.showerror("錯誤", "找不到『myself』部門的 Email，請先在左側設定並按「💾 儲存 Email」。")
-#         return
-
-#     # Files to be sent: If there is a selection, send only the selected files; otherwise, send all files.
-#     files = []
-#     conn = sqlite3.connect(DB_PATH)
-#     cursor = conn.cursor()
-#     sel = listbox_records.curselection()
-#     if sel:
-#         for idx in sel:
-#             fname = listbox_records.get(idx)
-#             cursor.execute("SELECT filepath FROM uploads WHERE filename=?", (fname,))
-#             row = cursor.fetchone()
-#             if row and os.path.exists(row[0]):
-#                 files.append((fname, row[0]))
-#     else:
-#         cursor.execute("SELECT filename, filepath FROM uploads ORDER BY id DESC")
-#         for fname, fpath in cursor.fetchall():
-#             if os.path.exists(fpath):
-#                 files.append((fname, fpath))
-#     conn.close()
-
-#     if not files:
-#         messagebox.showwarning("提醒", "目前沒有可寄送的檔案。")
-#         return
-
-#     try:
-#         server = open_smtp(default_user=my_email)
-#         if server is None:
-#             messagebox.showinfo("已取消", "你已取消寄送。")
-#             return
-#     except Exception as e:
-#         messagebox.showerror("SMTP 連線失敗", str(e))
-#         return
-
-#     sent, failed = 0, []
-#     for fname, fpath in files:
-#         subject = f"[測試寄送] {fname}"
-#         body = f"這是測試寄送（收件人使用左側『myself』Email）。\n附件：{fname}\n（系統自動寄出）"
-#         try:
-#             send_one(server, my_email, subject, body, fpath)
-#             sent += 1
-#         except Exception as e:
-#             failed.append(f"{fname}（{e}）")
-
-#     try:
-#         server.quit()
-#     except:
-#         pass
-
-#     summary = [f"✅ 已寄到『myself』：{sent} 封"]
-#     if failed:
-#         summary.append("⚠️ 失敗：")
-#         summary += [f"• {x}" for x in failed]
-#     messagebox.showinfo("測試寄信結果", "\n".join(summary))
-# ttk.Button(button_frame, text="📧 寄給自己（測試）", command=send_all_to_self, style="Success.TButton").grid(row=0, column=4, padx=10)
 
 # 啟動背景事件輪詢
 root.after(100, poll_background_events)
