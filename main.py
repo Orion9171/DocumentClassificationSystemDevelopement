@@ -929,6 +929,7 @@ def poll_background_events():
 load_departments()
 # load_records()
 load_documents()
+
 # Email management window region
 def open_email_management():
     """

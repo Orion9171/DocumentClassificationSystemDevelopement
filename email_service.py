@@ -182,6 +182,8 @@ class EmailManagementWindow:
         self.window.minsize(1050, 620)
         self.window.transient(parent)
 
+        self._apply_black_font_style()
+
         self._sending_ids = set()
         self._editor = None
         self._editor_tree = None
@@ -199,35 +201,55 @@ class EmailManagementWindow:
         self._build_ui()
         self.refresh()
 
+    def _apply_black_font_style(self):
+        """
+        Keep this Email Management page readable even if main.py globally sets
+        ttk foreground colors to white.
+        """
+        style = ttk.Style(self.window)
+
+        style.configure("Email.TFrame", background="#F3F4F6")
+        style.configure("Email.TLabel", background="#F3F4F6", foreground="#000000")
+        style.configure("Email.TLabelframe", background="#F3F4F6", foreground="#000000")
+        style.configure("Email.TLabelframe.Label", foreground="#000000")
+        style.configure("Email.TButton", foreground="#000000")
+        style.configure("Email.TCheckbutton", background="#F3F4F6", foreground="#000000")
+        style.configure("Email.Treeview", foreground="#000000", background="#FFFFFF", fieldbackground="#FFFFFF")
+        style.configure("Email.Treeview.Heading", foreground="#000000", background="#E5E7EB")
+
     def _build_ui(self):
-        header = ttk.Frame(self.window)
+        header = ttk.Frame(self.window, style="Email.TFrame")
         header.pack(fill="x", padx=12, pady=(12, 6))
 
         ttk.Label(
             header,
+            style="Email.TLabel",
             text="Email Document Dispatch",
             font=("Arial", 16, "bold"),
         ).pack(side="left")
 
         ttk.Label(
             header,
+            style="Email.TLabel",
             text=f"Minimum confidence: {self.settings.confidence_threshold:.0%}",
         ).pack(side="left", padx=24)
 
         ttk.Button(
             header,
+            style="Email.TButton",
             text="Refresh",
             command=self.refresh,
         ).pack(side="right")
 
         settings_group = ttk.LabelFrame(
             self.window,
+            style="Email.TLabelframe",
             text="Sender / SMTP Settings",
             padding=8,
         )
         settings_group.pack(fill="x", padx=12, pady=(0, 8))
 
-        ttk.Label(settings_group, text="SMTP Host").grid(
+        ttk.Label(settings_group, text="SMTP Host", style="Email.TLabel").grid(
             row=0, column=0, sticky="w", padx=5, pady=3
         )
         ttk.Entry(
@@ -236,7 +258,7 @@ class EmailManagementWindow:
             width=28,
         ).grid(row=0, column=1, sticky="we", padx=5, pady=3)
 
-        ttk.Label(settings_group, text="SMTP Port").grid(
+        ttk.Label(settings_group, text="SMTP Port", style="Email.TLabel").grid(
             row=0, column=2, sticky="w", padx=5, pady=3
         )
         ttk.Entry(
@@ -245,7 +267,7 @@ class EmailManagementWindow:
             width=8,
         ).grid(row=0, column=3, sticky="w", padx=5, pady=3)
 
-        ttk.Label(settings_group, text="Sender Email").grid(
+        ttk.Label(settings_group, text="Sender Email", style="Email.TLabel").grid(
             row=1, column=0, sticky="w", padx=5, pady=3
         )
         ttk.Entry(
@@ -254,7 +276,7 @@ class EmailManagementWindow:
             width=36,
         ).grid(row=1, column=1, sticky="we", padx=5, pady=3)
 
-        ttk.Label(settings_group, text="SMTP User").grid(
+        ttk.Label(settings_group, text="SMTP User", style="Email.TLabel").grid(
             row=1, column=2, sticky="w", padx=5, pady=3
         )
         ttk.Entry(
@@ -263,7 +285,7 @@ class EmailManagementWindow:
             width=36,
         ).grid(row=1, column=3, sticky="we", padx=5, pady=3)
 
-        ttk.Label(settings_group, text="SMTP Pass").grid(
+        ttk.Label(settings_group, text="SMTP Pass", style="Email.TLabel").grid(
             row=2, column=0, sticky="w", padx=5, pady=3
         )
         self.smtp_pass_entry = ttk.Entry(
@@ -277,6 +299,7 @@ class EmailManagementWindow:
         ttk.Checkbutton(
             settings_group,
             text="Show",
+            style="Email.TCheckbutton",
             variable=self._show_password_var,
             command=self._toggle_password_visibility,
         ).grid(row=2, column=2, sticky="w", padx=5, pady=3)
@@ -284,6 +307,7 @@ class EmailManagementWindow:
         ttk.Button(
             settings_group,
             text="Save SMTP Settings",
+            style="Email.TButton",
             command=self.save_smtp_settings,
         ).grid(row=2, column=3, sticky="e", padx=5, pady=3)
 
@@ -292,6 +316,7 @@ class EmailManagementWindow:
 
         ready_group = ttk.LabelFrame(
             self.window,
+            style="Email.TLabelframe",
             text="Ready To Send",
             padding=8,
         )
@@ -322,6 +347,7 @@ class EmailManagementWindow:
 
         review_group = ttk.LabelFrame(
             self.window,
+            style="Email.TLabelframe",
             text="Manual Review",
             padding=8,
         )
@@ -349,12 +375,13 @@ class EmailManagementWindow:
         self.review_tree.tag_configure("missing", background="#FDECEC")
         self.review_tree.bind("<Double-1>", self._on_review_double_click)
 
-        footer = ttk.Frame(self.window)
+        footer = ttk.Frame(self.window, style="Email.TFrame")
         footer.pack(fill="x", padx=12, pady=(0, 12))
 
-        ttk.Label(footer, textvariable=self.status_var).pack(side="left")
+        ttk.Label(footer, textvariable=self.status_var, style="Email.TLabel").pack(side="left")
         ttk.Label(
             footer,
+            style="Email.TLabel",
             text=(
                 "Double-click Recipient Email/Recipient to edit. "
                 "Only Ready To Send rows can be sent."
@@ -362,6 +389,7 @@ class EmailManagementWindow:
         ).pack(side="left", padx=18)
         ttk.Button(
             footer,
+            style="Email.TButton",
             text="Close",
             command=self.window.destroy,
         ).pack(side="right")
@@ -419,11 +447,12 @@ class EmailManagementWindow:
 
     @staticmethod
     def _build_tree(parent, columns, headings, widths):
-        container = ttk.Frame(parent)
+        container = ttk.Frame(parent, style="Email.TFrame")
         container.pack(fill="both", expand=True)
 
         tree = ttk.Treeview(
             container,
+            style="Email.Treeview",
             columns=columns,
             show="headings",
             selectmode="browse",
