@@ -58,6 +58,12 @@ class EmailManagementWindow:
         self.status_var = tk.StringVar(value="Ready")
         self.sender_email_var = tk.StringVar(value=self.settings.sender_email)
         self.smtp_user_var = tk.StringVar(value=self.settings.smtp_user)
+        self.same_as_sender_var = tk.BooleanVar(
+            value=(
+                not self.settings.smtp_user
+                or self.settings.smtp_user == self.settings.sender_email
+            )
+        )
         self.smtp_pass_var = tk.StringVar(value="")
         self.smtp_host_var = tk.StringVar(value=self.settings.smtp_host)
         self.smtp_port_var = tk.StringVar(value=str(self.settings.smtp_port))
@@ -111,15 +117,34 @@ class EmailManagementWindow:
         self.sender_email_entry = ttk.Entry(settings_group, textvariable=self.sender_email_var, width=36)
         self.sender_email_entry.grid(row=1, column=1, sticky="we", padx=5, pady=3)
         self._add_placeholder(self.sender_email_entry, self.sender_email_var, "e.g. sender@example.com")
+        self.sender_email_entry.bind(
+            "<KeyRelease>",
+            self._sync_smtp_user_from_sender,
+            add="+",
+        )
+        self.sender_email_entry.bind(
+            "<FocusOut>",
+            self._sync_smtp_user_from_sender,
+            add="+",
+        )
 
-        ttk.Label(settings_group, text="SMTP User", style="Email.TLabel").grid(row=1, column=2, sticky="w", padx=5, pady=3)
+        self.same_as_sender_check = ttk.Checkbutton(
+            settings_group,
+            text="SMTP User is the same as Sender Email",
+            style="Email.TCheckbutton",
+            variable=self.same_as_sender_var,
+            command=self._toggle_smtp_user_entry,
+        )
+        self.same_as_sender_check.grid(row=1, column=2, columnspan=2, sticky="w", padx=5, pady=3)
+
+        ttk.Label(settings_group, text="SMTP User", style="Email.TLabel").grid(row=2, column=0, sticky="w", padx=5, pady=3)
         self.smtp_user_entry = ttk.Entry(settings_group, textvariable=self.smtp_user_var, width=36)
-        self.smtp_user_entry.grid(row=1, column=3, sticky="we", padx=5, pady=3)
+        self.smtp_user_entry.grid(row=2, column=1, sticky="we", padx=5, pady=3)
         self._add_placeholder(self.smtp_user_entry, self.smtp_user_var, "SMTP account or email")
 
-        ttk.Label(settings_group, text="SMTP Password", style="Email.TLabel").grid(row=2, column=0, sticky="w", padx=5, pady=3)
+        ttk.Label(settings_group, text="SMTP Password", style="Email.TLabel").grid(row=3, column=0, sticky="w", padx=5, pady=3)
         self.smtp_pass_entry = ttk.Entry(settings_group, textvariable=self.smtp_pass_var, width=36, show="*")
-        self.smtp_pass_entry.grid(row=2, column=1, sticky="we", padx=5, pady=3)
+        self.smtp_pass_entry.grid(row=3, column=1, sticky="we", padx=5, pady=3)
         self._add_placeholder(
             self.smtp_pass_entry,
             self.smtp_pass_var,
@@ -132,29 +157,30 @@ class EmailManagementWindow:
             style="Email.TCheckbutton",
             variable=self._show_password_var,
             command=self._toggle_password_visibility,
-        ).grid(row=2, column=2, sticky="w", padx=5, pady=3)
+        ).grid(row=3, column=2, sticky="w", padx=5, pady=3)
         ttk.Button(
             settings_group,
             text="Save Non-secret Settings",
             style="Email.TButton",
             command=self.save_smtp_settings,
-        ).grid(row=2, column=3, sticky="e", padx=5, pady=3)
+        ).grid(row=3, column=3, sticky="e", padx=5, pady=3)
 
         security_text = (
             "TLS Required — "
             + ("STARTTLS" if self.settings.security_mode == "starttls" else "Implicit TLS")
             + "; certificate validation enabled; password is never stored"
         )
-        ttk.Label(settings_group, text="Connection Security", style="Email.TLabel").grid(row=3, column=0, sticky="w", padx=5, pady=3)
+        ttk.Label(settings_group, text="Connection Security", style="Email.TLabel").grid(row=4, column=0, sticky="w", padx=5, pady=3)
         self.security_label = ttk.Label(
             settings_group,
             text=security_text,
             style="Email.Security.TLabel",
             font=("Arial", 10, "bold"),
         )
-        self.security_label.grid(row=3, column=1, columnspan=3, sticky="w", padx=5, pady=3)
+        self.security_label.grid(row=4, column=1, columnspan=3, sticky="w", padx=5, pady=3)
         settings_group.columnconfigure(1, weight=1)
         settings_group.columnconfigure(3, weight=1)
+        self._toggle_smtp_user_entry()
 
         ready_group = ttk.LabelFrame(self.window, style="Email.TLabelframe", text="Ready To Send", padding=8)
         ready_group.pack(fill="both", expand=True, padx=12, pady=(4, 8))
@@ -269,6 +295,21 @@ class EmailManagementWindow:
         if state["password"]:
             entry.configure(show="")
 
+    def _sync_smtp_user_from_sender(self, _event=None):
+        if not self.same_as_sender_var.get():
+            return
+        sender_email = self._entry_value(self.sender_email_entry)
+        self.smtp_user_var.set(sender_email)
+
+    def _toggle_smtp_user_entry(self):
+        if self.same_as_sender_var.get():
+            self._sync_smtp_user_from_sender()
+            self.smtp_user_entry.configure(state="disabled")
+        else:
+            self.smtp_user_entry.configure(state="normal")
+            if not self._entry_value(self.smtp_user_entry):
+                self._restore_placeholder(self.smtp_user_entry)
+
     def _toggle_password_visibility(self):
         state = self._placeholder_state.get(self.smtp_pass_entry)
         if state and state["active"]:
@@ -301,13 +342,20 @@ class EmailManagementWindow:
         except ValueError as exc:
             raise EmailConfigurationError("SMTP Port must be a number.") from exc
 
+        sender_email = self._entry_value(self.sender_email_entry)
+        smtp_user = (
+            sender_email
+            if self.same_as_sender_var.get()
+            else self._entry_value(self.smtp_user_entry)
+        )
+
         self.settings = save_non_secret_email_settings(
             self.config_path,
             {
                 "smtp_host": self._entry_value(self.smtp_host_entry),
                 "smtp_port": smtp_port,
-                "smtp_user": self._entry_value(self.smtp_user_entry),
-                "sender_email": self._entry_value(self.sender_email_entry),
+                "smtp_user": smtp_user,
+                "sender_email": sender_email,
             },
         )
 
@@ -319,11 +367,16 @@ class EmailManagementWindow:
             return
         self.sender_email_var.set(self.settings.sender_email)
         self.smtp_user_var.set(self.settings.smtp_user)
+        self.same_as_sender_var.set(
+            self.settings.smtp_user == self.settings.sender_email
+        )
+        self._toggle_smtp_user_entry()
         self.smtp_host_var.set(self.settings.smtp_host)
         self.smtp_port_var.set(str(self.settings.smtp_port))
         messagebox.showinfo(
             "Saved",
-            "SMTP host, port, user, and sender were saved. The SMTP password was not stored.",
+            "SMTP host, port, SMTP user, and sender email were saved. "
+            "The SMTP password was not stored.",
             parent=self.window,
         )
         self.refresh()
