@@ -930,12 +930,14 @@ load_departments()
 # load_records()
 load_documents()
 
-# Email management window region
+# region Email management window
 def open_email_management():
     """
     Open the Email Treeview window.
 
-    SMTP credentials are loaded from config.json.  The window refreshes the
+    Non-secret SMTP server settings are loaded from config.json.
+    The SMTP password is entered at runtime and is never persisted.
+    TLS is mandatory for every SMTP connection. The window refreshes the
     main document table after a successful send.
     """
     email_service.open_email_window(

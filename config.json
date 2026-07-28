@@ -3,12 +3,11 @@
     "upload_dir": "uploaded_files",
     "email_config": {
         "enabled": true,
-        "smtp_host": "smtp.gmail.com",
+        "smtp_host": "",
         "smtp_port": 587,
-        "smtp_user": "zhangbinghan47@gmail.com",
-        "smtp_pass": "jfqnsczgqlifwzsc",
-        "sender_email": "zhangbinghan47@gmail.com",
-        "use_starttls": true,
+        "smtp_user": "",
+        "sender_email": "",
+        "security_mode": "starttls",
         "confidence_threshold": 0.8,
         "max_attachment_mb": 15,
         "subject_prefix": "[AI 公文分發]"
@@ -16,10 +15,5 @@
     "model_config": {
         "model_path": "C:\\Users\\user\\DocumentClassificationSystemDevelopement\\Llama-classifier-finetuned",
         "base_model": "C:\\Users\\user\\DocumentClassificationSystemDevelopement\\Meta-Llama-3-8B-Instruct"
-    },
-    "smtp_host": "smtp.gmail.com",
-    "smtp_port": 587,
-    "smtp_user": "zhangbinghan47@gmail.com",
-    "smtp_pass": "jfqnsczgqlifwzsc",
-    "sender_email": "zhangbinghan47@gmail.com"
+    }
 }
