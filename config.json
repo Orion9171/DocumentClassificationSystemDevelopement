@@ -3,10 +3,10 @@
     "upload_dir": "uploaded_files",
     "email_config": {
         "enabled": true,
-        "smtp_host": "smtp.gmail.com",
+        "smtp_host": "smtp.example.com",
         "smtp_port": 587,
-        "smtp_user": "zhangbinghan47@gmail.com",
-        "sender_email": "zhangbinghan47@gmail.com",
+        "smtp_user": "sender@example.com",
+        "sender_email": "sender@example.com",
         "security_mode": "starttls",
         "confidence_threshold": 0.8,
         "max_attachment_mb": 15,
