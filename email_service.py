@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import mimetypes
 import os
@@ -16,14 +17,25 @@ from email_config import (
     EMAIL_PATTERN,
     EmailConfigurationError,
     EmailSettings,
+    get_email_preferences,
     migrate_and_sanitize_config,
-    save_non_secret_email_settings,
+    save_email_preferences,
 )
 from smtp_client import SecureSMTPClient, SecureSMTPError
+
+try:
+    import keyring
+    from keyring.errors import KeyringError
+except Exception:  # Optional dependency; only required for password persistence.
+    keyring = None
+
+    class KeyringError(Exception):
+        pass
 
 
 configure_logging(os.path.dirname(os.path.abspath(__file__)))
 logger = logging.getLogger("email.ui")
+KEYRING_SERVICE = "AI Document Dispatch SMTP"
 
 
 class EmailManagementWindow:
@@ -41,6 +53,10 @@ class EmailManagementWindow:
         self.base_path = os.path.dirname(os.path.abspath(__file__))
         self.config_path = config_path or os.path.join(self.base_path, "config.json")
         self.settings = migrate_and_sanitize_config(self.config_path)
+        self.preferences = get_email_preferences(self.config_path)
+        self._saved_credential_user = (self.settings.smtp_user or "").strip()
+        self._saved_password_available = False
+        self._suppress_remember_callbacks = False
 
         self.window = tk.Toplevel(parent)
         self.window.title("Email Management")
@@ -55,22 +71,35 @@ class EmailManagementWindow:
         self._editor_item = None
         self._placeholder_state = {}
 
+        remember_settings = bool(self.preferences.get("remember_settings", False))
+        remember_password = bool(self.preferences.get("remember_password", False))
+        same_as_sender = bool(self.preferences.get("same_as_sender", True))
+
         self.status_var = tk.StringVar(value="Ready")
-        self.sender_email_var = tk.StringVar(value=self.settings.sender_email)
-        self.smtp_user_var = tk.StringVar(value=self.settings.smtp_user)
-        self.same_as_sender_var = tk.BooleanVar(
-            value=(
-                not self.settings.smtp_user
-                or self.settings.smtp_user == self.settings.sender_email
-            )
+        self.remember_settings_var = tk.BooleanVar(value=remember_settings)
+        self.remember_password_var = tk.BooleanVar(
+            value=remember_settings and remember_password
+        )
+        self.same_as_sender_var = tk.BooleanVar(value=same_as_sender)
+
+        self.sender_email_var = tk.StringVar(
+            value=self.settings.sender_email if remember_settings else ""
+        )
+        self.smtp_user_var = tk.StringVar(
+            value=self.settings.smtp_user if remember_settings else ""
         )
         self.smtp_pass_var = tk.StringVar(value="")
-        self.smtp_host_var = tk.StringVar(value=self.settings.smtp_host)
-        self.smtp_port_var = tk.StringVar(value=str(self.settings.smtp_port))
+        self.smtp_host_var = tk.StringVar(
+            value=self.settings.smtp_host if remember_settings else ""
+        )
+        self.smtp_port_var = tk.StringVar(
+            value=str(self.settings.smtp_port if remember_settings else 587)
+        )
         self._show_password_var = tk.BooleanVar(value=False)
 
         self._apply_style()
         self._build_ui()
+        self._load_remembered_password()
         self.refresh()
 
     def _apply_style(self):
@@ -158,29 +187,61 @@ class EmailManagementWindow:
             variable=self._show_password_var,
             command=self._toggle_password_visibility,
         ).grid(row=3, column=2, sticky="w", padx=5, pady=3)
-        ttk.Button(
+
+        self.remember_settings_check = ttk.Checkbutton(
             settings_group,
-            text="Save Non-secret Settings",
+            text="Remember SMTP settings on this device",
+            style="Email.TCheckbutton",
+            variable=self.remember_settings_var,
+            command=self._on_remember_settings_changed,
+        )
+        self.remember_settings_check.grid(
+            row=4, column=0, columnspan=2, sticky="w", padx=5, pady=3
+        )
+
+        self.remember_password_check = ttk.Checkbutton(
+            settings_group,
+            text="Remember password securely",
+            style="Email.TCheckbutton",
+            variable=self.remember_password_var,
+            command=self._on_remember_password_changed,
+        )
+        self.remember_password_check.grid(
+            row=4, column=2, sticky="w", padx=5, pady=3
+        )
+
+        action_frame = ttk.Frame(settings_group, style="Email.TFrame")
+        action_frame.grid(row=4, column=3, sticky="e", padx=5, pady=3)
+        ttk.Button(
+            action_frame,
+            text="Test Connection",
+            style="Email.TButton",
+            command=self.test_connection,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            action_frame,
+            text="Apply / Save Settings",
             style="Email.TButton",
             command=self.save_smtp_settings,
-        ).grid(row=3, column=3, sticky="e", padx=5, pady=3)
+        ).pack(side="left")
 
         security_text = (
             "TLS Required — "
             + ("STARTTLS" if self.settings.security_mode == "starttls" else "Implicit TLS")
-            + "; certificate validation enabled; password is never stored"
+            + "; certificate validation enabled; passwords are never stored in config.json"
         )
-        ttk.Label(settings_group, text="Connection Security", style="Email.TLabel").grid(row=4, column=0, sticky="w", padx=5, pady=3)
+        ttk.Label(settings_group, text="Connection Security", style="Email.TLabel").grid(row=5, column=0, sticky="w", padx=5, pady=3)
         self.security_label = ttk.Label(
             settings_group,
             text=security_text,
             style="Email.Security.TLabel",
             font=("Arial", 10, "bold"),
         )
-        self.security_label.grid(row=4, column=1, columnspan=3, sticky="w", padx=5, pady=3)
+        self.security_label.grid(row=5, column=1, columnspan=3, sticky="w", padx=5, pady=3)
         settings_group.columnconfigure(1, weight=1)
         settings_group.columnconfigure(3, weight=1)
         self._toggle_smtp_user_entry()
+        self._toggle_remember_options()
 
         ready_group = ttk.LabelFrame(self.window, style="Email.TLabelframe", text="Ready To Send", padding=8)
         ready_group.pack(fill="both", expand=True, padx=12, pady=(4, 8))
@@ -310,6 +371,216 @@ class EmailManagementWindow:
             if not self._entry_value(self.smtp_user_entry):
                 self._restore_placeholder(self.smtp_user_entry)
 
+    def _toggle_remember_options(self):
+        if not self.remember_settings_var.get():
+            self.remember_password_var.set(False)
+            self.remember_password_check.configure(state="disabled")
+        else:
+            self.remember_password_check.configure(state="normal")
+
+    def _on_remember_settings_changed(self):
+        if self._suppress_remember_callbacks:
+            return
+        if self.remember_settings_var.get():
+            self.remember_password_check.configure(state="normal")
+            return
+
+        had_saved_data = bool(
+            self.preferences.get("remember_settings")
+            or self.preferences.get("remember_password")
+            or self._saved_password_available
+        )
+        if had_saved_data and not messagebox.askyesno(
+            "Remove Saved SMTP Data",
+            "Stop remembering SMTP settings and remove the saved SMTP credential from this device?",
+            parent=self.window,
+        ):
+            self._suppress_remember_callbacks = True
+            self.remember_settings_var.set(True)
+            self._suppress_remember_callbacks = False
+            return
+
+        self._suppress_remember_callbacks = True
+        self.remember_password_var.set(False)
+        self._suppress_remember_callbacks = False
+        self.remember_password_check.configure(state="disabled")
+        try:
+            self._remove_saved_credentials()
+            self._clear_persisted_smtp_settings()
+            self.status_var.set("Saved SMTP settings and credential were removed.")
+        except Exception as exc:
+            self._suppress_remember_callbacks = True
+            self.remember_settings_var.set(True)
+            self._suppress_remember_callbacks = False
+            self.remember_password_check.configure(state="normal")
+            messagebox.showerror("SMTP Settings Error", str(exc), parent=self.window)
+
+    def _on_remember_password_changed(self):
+        if self._suppress_remember_callbacks:
+            return
+        if self.remember_password_var.get():
+            if not self.remember_settings_var.get():
+                self._suppress_remember_callbacks = True
+                self.remember_password_var.set(False)
+                self._suppress_remember_callbacks = False
+                messagebox.showwarning(
+                    "Remember SMTP Settings Required",
+                    "Enable Remember SMTP settings before remembering the password.",
+                    parent=self.window,
+                )
+            return
+
+        if not (self.preferences.get("remember_password") or self._saved_password_available):
+            return
+        if not messagebox.askyesno(
+            "Remove Saved Credential",
+            "Remove the saved SMTP password from this device?",
+            parent=self.window,
+        ):
+            self._suppress_remember_callbacks = True
+            self.remember_password_var.set(True)
+            self._suppress_remember_callbacks = False
+            return
+        try:
+            self._remove_saved_credentials()
+            self._persist_current_preferences(remember_password=False)
+            self.status_var.set("Saved SMTP credential was removed.")
+        except Exception as exc:
+            self._suppress_remember_callbacks = True
+            self.remember_password_var.set(True)
+            self._suppress_remember_callbacks = False
+            messagebox.showerror("Credential Removal Error", str(exc), parent=self.window)
+
+    def _current_credential_user(self) -> str:
+        sender_email = self._entry_value(self.sender_email_entry)
+        if self.same_as_sender_var.get():
+            return sender_email
+        return self._entry_value(self.smtp_user_entry)
+
+    def _load_remembered_password(self):
+        self._saved_password_available = False
+        if not self.remember_password_var.get() or not self._saved_credential_user:
+            self._update_password_hint()
+            return
+        if keyring is None:
+            self._suppress_remember_callbacks = True
+            self.remember_password_var.set(False)
+            self._suppress_remember_callbacks = False
+            logger.warning("Password persistence requested but keyring is unavailable")
+            self._update_password_hint()
+            return
+        try:
+            self._saved_password_available = bool(
+                keyring.get_password(KEYRING_SERVICE, self._saved_credential_user)
+            )
+        except KeyringError as exc:
+            logger.warning("Unable to read SMTP credential from keyring: %s", type(exc).__name__)
+        self._update_password_hint()
+
+    def _update_password_hint(self):
+        state = self._placeholder_state.get(getattr(self, "smtp_pass_entry", None))
+        if not state or not state["active"]:
+            return
+        hint = (
+            "Saved securely — leave blank to use it"
+            if self._saved_password_available
+            else "Enter SMTP password"
+        )
+        state["placeholder"] = hint
+        self._restore_placeholder(self.smtp_pass_entry)
+
+    def _get_saved_password(self, username: str) -> str:
+        if not self.remember_password_var.get() or keyring is None or not username:
+            return ""
+        try:
+            return keyring.get_password(KEYRING_SERVICE, username) or ""
+        except KeyringError as exc:
+            logger.warning("Unable to read SMTP credential from keyring: %s", type(exc).__name__)
+            raise EmailConfigurationError(
+                "The saved SMTP credential could not be read from the operating system credential store."
+            ) from exc
+
+    def _resolve_password(self) -> str:
+        entered = self._entry_value(self.smtp_pass_entry, strip=False)
+        if entered:
+            return entered
+        return self._get_saved_password(self._current_credential_user())
+
+    def _remove_saved_credentials(self):
+        candidates = {self._saved_credential_user, self._current_credential_user()}
+        if keyring is not None:
+            for username in candidates:
+                if not username:
+                    continue
+                try:
+                    keyring.delete_password(KEYRING_SERVICE, username)
+                except Exception:
+                    pass
+        self._saved_credential_user = ""
+        self._saved_password_available = False
+        self._update_password_hint()
+
+    def _persist_current_preferences(self, *, remember_password: bool):
+        runtime = self._apply_runtime_settings()
+        save_email_preferences(
+            self.config_path,
+            {
+                "smtp_host": runtime.smtp_host,
+                "smtp_port": runtime.smtp_port,
+                "smtp_user": runtime.smtp_user,
+                "sender_email": runtime.sender_email,
+            },
+            remember_settings=self.remember_settings_var.get(),
+            remember_password=remember_password,
+            same_as_sender=self.same_as_sender_var.get(),
+        )
+        self.preferences = get_email_preferences(self.config_path)
+
+    def _clear_persisted_smtp_settings(self):
+        runtime = self._apply_runtime_settings()
+        save_email_preferences(
+            self.config_path,
+            {
+                "smtp_host": runtime.smtp_host,
+                "smtp_port": runtime.smtp_port,
+                "smtp_user": runtime.smtp_user,
+                "sender_email": runtime.sender_email,
+            },
+            remember_settings=False,
+            remember_password=False,
+            same_as_sender=self.same_as_sender_var.get(),
+        )
+        self.preferences = get_email_preferences(self.config_path)
+
+    def _save_or_remove_password(self, username: str, entered_password: str):
+        old_username = self._saved_credential_user
+        if self.remember_password_var.get():
+            if keyring is None:
+                raise EmailConfigurationError(
+                    "Secure password storage requires the 'keyring' package. Install it with: pip install keyring"
+                )
+            password = entered_password or self._get_saved_password(old_username or username)
+            if not password:
+                raise EmailConfigurationError(
+                    "Enter the SMTP password before selecting Remember password."
+                )
+            if old_username and old_username != username:
+                try:
+                    keyring.delete_password(KEYRING_SERVICE, old_username)
+                except Exception:
+                    pass
+            try:
+                keyring.set_password(KEYRING_SERVICE, username, password)
+            except KeyringError as exc:
+                raise EmailConfigurationError(
+                    "The SMTP password could not be stored in the operating system credential store."
+                ) from exc
+            self._saved_credential_user = username
+            self._saved_password_available = True
+        else:
+            self._remove_saved_credentials()
+        self._update_password_hint()
+
     def _toggle_password_visibility(self):
         state = self._placeholder_state.get(self.smtp_pass_entry)
         if state and state["active"]:
@@ -336,7 +607,7 @@ class EmailManagementWindow:
         self._close_editor(save=False)
         self.window.destroy()
 
-    def save_smtp_settings_without_popup(self):
+    def _apply_runtime_settings(self) -> EmailSettings:
         try:
             smtp_port = int(self.smtp_port_entry.get().strip())
         except ValueError as exc:
@@ -349,37 +620,127 @@ class EmailManagementWindow:
             else self._entry_value(self.smtp_user_entry)
         )
 
-        self.settings = save_non_secret_email_settings(
-            self.config_path,
-            {
+        runtime_config = {
+            "email_config": {
+                "enabled": self.settings.enabled,
                 "smtp_host": self._entry_value(self.smtp_host_entry),
                 "smtp_port": smtp_port,
                 "smtp_user": smtp_user,
                 "sender_email": sender_email,
-            },
+                "security_mode": self.settings.security_mode,
+                "confidence_threshold": self.settings.confidence_threshold,
+                "max_attachment_mb": self.settings.max_attachment_mb,
+                "subject_prefix": self.settings.subject_prefix,
+            }
+        }
+        self.settings = EmailSettings.from_config(
+            runtime_config,
+            require_connection_settings=True,
         )
+        return self.settings
+
+    def save_smtp_settings_without_popup(self):
+        # Kept for compatibility. Applying settings does not automatically persist them.
+        return self._apply_runtime_settings()
 
     def save_smtp_settings(self):
         try:
-            self.save_smtp_settings_without_popup()
+            runtime_settings = self._apply_runtime_settings()
+            password = self._entry_value(self.smtp_pass_entry, strip=False)
+
+            if self.remember_password_var.get() and not self.remember_settings_var.get():
+                raise EmailConfigurationError(
+                    "Remember SMTP settings must be enabled before remembering the password."
+                )
+
+            save_email_preferences(
+                self.config_path,
+                {
+                    "smtp_host": runtime_settings.smtp_host,
+                    "smtp_port": runtime_settings.smtp_port,
+                    "smtp_user": runtime_settings.smtp_user,
+                    "sender_email": runtime_settings.sender_email,
+                },
+                remember_settings=self.remember_settings_var.get(),
+                remember_password=self.remember_password_var.get(),
+                same_as_sender=self.same_as_sender_var.get(),
+            )
+            self._save_or_remove_password(runtime_settings.smtp_user, password)
+            self.preferences = get_email_preferences(self.config_path)
+            self._clear_password()
+            self._update_password_hint()
         except Exception as exc:
             messagebox.showerror("SMTP Settings Error", str(exc), parent=self.window)
             return
-        self.sender_email_var.set(self.settings.sender_email)
-        self.smtp_user_var.set(self.settings.smtp_user)
-        self.same_as_sender_var.set(
-            self.settings.smtp_user == self.settings.sender_email
-        )
-        self._toggle_smtp_user_entry()
-        self.smtp_host_var.set(self.settings.smtp_host)
-        self.smtp_port_var.set(str(self.settings.smtp_port))
+
+        if self.remember_settings_var.get():
+            message = "SMTP settings were saved on this device."
+        else:
+            message = "SMTP settings will be cleared when this window is reopened."
+
+        if self.remember_password_var.get():
+            message += " The password was stored in the operating system credential store."
+        else:
+            message += " The password was not stored."
+
+        messagebox.showinfo("Settings Applied", message, parent=self.window)
+        self.refresh()
+
+    def test_connection(self):
+        try:
+            settings = self._apply_runtime_settings()
+            password = self._resolve_password()
+        except Exception as exc:
+            messagebox.showerror("SMTP Settings Error", str(exc), parent=self.window)
+            return
+        if not password:
+            messagebox.showerror(
+                "SMTP Password Required",
+                "Enter the SMTP password, or use a saved secure credential.",
+                parent=self.window,
+            )
+            self.smtp_pass_entry.focus_set()
+            return
+        self.status_var.set("Testing secure SMTP connection...")
+        threading.Thread(
+            target=self._test_connection_worker,
+            args=(settings, password),
+            daemon=True,
+            name="smtp-connection-test",
+        ).start()
+
+    def _test_connection_worker(self, settings, password):
+        try:
+            SecureSMTPClient(settings).test_authentication(password)
+            self.window.after(0, self._test_connection_succeeded)
+        except SecureSMTPError as exc:
+            self.window.after(0, lambda error=str(exc): self._test_connection_failed(error))
+        except Exception:
+            logger.exception("Unexpected SMTP connection test failure")
+            self.window.after(
+                0,
+                lambda: self._test_connection_failed(
+                    "The SMTP connection test failed because of an internal system error."
+                ),
+            )
+        finally:
+            password = ""
+
+    def _test_connection_succeeded(self):
+        self._clear_password()
+        self._update_password_hint()
+        self.status_var.set("Secure SMTP connection and authentication succeeded.")
         messagebox.showinfo(
-            "Saved",
-            "SMTP host, port, SMTP user, and sender email were saved. "
-            "The SMTP password was not stored.",
+            "SMTP Test Successful",
+            "DNS, TLS, certificate validation, and SMTP authentication succeeded. No email was sent.",
             parent=self.window,
         )
-        self.refresh()
+
+    def _test_connection_failed(self, error):
+        self._clear_password()
+        self._update_password_hint()
+        self.status_var.set("SMTP connection test failed.")
+        messagebox.showerror("SMTP Test Failed", error, parent=self.window)
 
     def refresh(self):
         if self._sending_ids:
@@ -533,9 +894,17 @@ class EmailManagementWindow:
             messagebox.showerror("SMTP Settings Error", str(exc), parent=self.window)
             return
 
-        password = self._entry_value(self.smtp_pass_entry, strip=False)
+        try:
+            password = self._resolve_password()
+        except Exception as exc:
+            messagebox.showerror("SMTP Credential Error", str(exc), parent=self.window)
+            return
         if not password:
-            messagebox.showerror("SMTP Password Required", "Enter the SMTP password before sending.", parent=self.window)
+            messagebox.showerror(
+                "SMTP Password Required",
+                "Enter the SMTP password, or enable secure password storage and save it first.",
+                parent=self.window,
+            )
             self.smtp_pass_entry.focus_set()
             return
 
@@ -658,6 +1027,7 @@ class EmailManagementWindow:
     def _send_succeeded(self, document_id, recipients):
         self._sending_ids.discard(document_id)
         self._clear_password()
+        self._update_password_hint()
         self.status_var.set("Email sent successfully to " + ", ".join(recipients))
         messagebox.showinfo("Email Sent", "The document was sent successfully.", parent=self.window)
         self.refresh()
@@ -667,6 +1037,7 @@ class EmailManagementWindow:
     def _send_failed(self, document_id, error):
         self._sending_ids.discard(document_id)
         self._clear_password()
+        self._update_password_hint()
         self.status_var.set("Email sending failed.")
         messagebox.showerror("Email Sending Failed", error, parent=self.window)
         self.refresh()

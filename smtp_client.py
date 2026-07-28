@@ -109,6 +109,74 @@ class SecureSMTPClient:
 
         return SMTPDeliveryResult(refused_recipients={})
 
+
+    def test_authentication(self, password: str) -> None:
+        """Validate DNS, TLS, certificate verification, and SMTP login without sending mail."""
+        if not password:
+            raise SMTPAuthenticationFailure("SMTP password is required.")
+
+        try:
+            context = self._tls_context()
+            if self.settings.security_mode == "ssl":
+                with smtplib.SMTP_SSL(
+                    host=self.settings.smtp_host,
+                    port=self.settings.smtp_port,
+                    timeout=self.timeout,
+                    context=context,
+                ) as server:
+                    server.ehlo()
+                    server.login(self.settings.smtp_user, password)
+                    server.noop()
+            else:
+                with smtplib.SMTP(
+                    host=self.settings.smtp_host,
+                    port=self.settings.smtp_port,
+                    timeout=self.timeout,
+                ) as server:
+                    server.ehlo()
+                    if not server.has_extn("STARTTLS"):
+                        raise SMTPTransportSecurityError(
+                            "The SMTP server did not advertise STARTTLS. Connection testing was blocked."
+                        )
+                    server.starttls(context=context)
+                    server.ehlo()
+                    server.login(self.settings.smtp_user, password)
+                    server.noop()
+        except SMTPTransportSecurityError:
+            raise
+        except smtplib.SMTPAuthenticationError as exc:
+            logger.warning(
+                "SMTP authentication test failed for user=%s host=%s",
+                self.settings.smtp_user,
+                self.settings.smtp_host,
+            )
+            raise SMTPAuthenticationFailure(
+                "SMTP authentication failed. Verify the account, password, app password, and server policy."
+            ) from exc
+        except ssl.SSLCertVerificationError as exc:
+            logger.error("TLS certificate verification failed host=%s", self.settings.smtp_host)
+            raise SMTPTransportSecurityError(
+                "TLS certificate verification failed. The connection was blocked."
+            ) from exc
+        except ssl.SSLError as exc:
+            logger.error("TLS negotiation failed host=%s", self.settings.smtp_host)
+            raise SMTPTransportSecurityError(
+                "A secure TLS connection could not be established."
+            ) from exc
+        except smtplib.SMTPNotSupportedError as exc:
+            logger.error("Required SMTP TLS feature unavailable host=%s", self.settings.smtp_host)
+            raise SMTPTransportSecurityError(
+                "The SMTP server does not support the required TLS security mode."
+            ) from exc
+        except (socket.timeout, TimeoutError) as exc:
+            raise SMTPConnectionFailure("The SMTP server connection timed out.") from exc
+        except socket.gaierror as exc:
+            raise SMTPConnectionFailure("The SMTP server address could not be resolved.") from exc
+        except (ConnectionError, OSError, smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected) as exc:
+            raise SMTPConnectionFailure("The SMTP server could not be reached securely.") from exc
+        except smtplib.SMTPException as exc:
+            raise SecureSMTPError("The SMTP server rejected the authentication test.") from exc
+
     def _send_starttls(self, message: EmailMessage, password: str):
         context = self._tls_context()
         with smtplib.SMTP(

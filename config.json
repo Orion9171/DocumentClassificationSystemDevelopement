@@ -3,14 +3,17 @@
     "upload_dir": "uploaded_files",
     "email_config": {
         "enabled": true,
-        "smtp_host": "",
+        "smtp_host": "smtp.gmail.com",
         "smtp_port": 587,
-        "smtp_user": "",
-        "sender_email": "",
+        "smtp_user": "zhangbinghan47@gmail.com",
+        "sender_email": "zhangbinghan47@gmail.com",
         "security_mode": "starttls",
         "confidence_threshold": 0.8,
         "max_attachment_mb": 15,
-        "subject_prefix": "[AI 公文分發]"
+        "subject_prefix": "[AI 公文分發]",
+        "remember_settings": false,
+        "remember_password": false,
+        "same_as_sender": true
     },
     "model_config": {
         "model_path": "C:\\Users\\user\\DocumentClassificationSystemDevelopement\\Llama-classifier-finetuned",

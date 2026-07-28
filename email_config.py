@@ -27,6 +27,9 @@ PERSISTED_EMAIL_KEYS = {
     "confidence_threshold",
     "max_attachment_mb",
     "subject_prefix",
+    "remember_settings",
+    "remember_password",
+    "same_as_sender",
 }
 
 SENSITIVE_KEYS = {
@@ -288,6 +291,9 @@ def sanitize_config(
         "confidence_threshold": 0.8,
         "max_attachment_mb": 15,
         "subject_prefix": "[AI 公文分發]",
+        "remember_settings": False,
+        "remember_password": False,
+        "same_as_sender": True,
     }
 
     clean_section = {
@@ -313,6 +319,79 @@ def sanitize_config(
 
     config["email_config"] = clean_section
     return config
+
+
+def get_email_preferences(config_path: str) -> Dict[str, Any]:
+    config = sanitize_config(load_config(config_path))
+    section = config["email_config"]
+    return {
+        "remember_settings": bool(section.get("remember_settings", False)),
+        "remember_password": bool(section.get("remember_password", False)),
+        "same_as_sender": bool(section.get("same_as_sender", True)),
+    }
+
+
+def save_email_preferences(
+    config_path: str,
+    values: Dict[str, Any],
+    *,
+    remember_settings: bool,
+    remember_password: bool,
+    same_as_sender: bool,
+) -> EmailSettings:
+    forbidden = set(values) & SENSITIVE_KEYS
+    if forbidden:
+        raise EmailConfigurationError(
+            "Sensitive credentials must not be stored in config.json: "
+            + ", ".join(sorted(forbidden))
+        )
+
+    runtime_section = {
+        "enabled": True,
+        "smtp_host": values.get("smtp_host", ""),
+        "smtp_port": values.get("smtp_port", 587),
+        "smtp_user": values.get("smtp_user", ""),
+        "sender_email": values.get("sender_email", ""),
+    }
+
+    current = sanitize_config(load_config(config_path))
+    current_section = current["email_config"]
+    for key in (
+        "security_mode",
+        "confidence_threshold",
+        "max_attachment_mb",
+        "subject_prefix",
+    ):
+        runtime_section[key] = current_section[key]
+
+    runtime_settings = EmailSettings.from_config(
+        {"email_config": runtime_section},
+        require_connection_settings=True,
+    )
+
+    current_section["remember_settings"] = bool(remember_settings)
+    current_section["remember_password"] = bool(
+        remember_settings and remember_password
+    )
+    current_section["same_as_sender"] = bool(same_as_sender)
+
+    if remember_settings:
+        current_section.update({
+            "smtp_host": runtime_settings.smtp_host,
+            "smtp_port": runtime_settings.smtp_port,
+            "smtp_user": runtime_settings.smtp_user,
+            "sender_email": runtime_settings.sender_email,
+        })
+    else:
+        current_section.update({
+            "smtp_host": "",
+            "smtp_port": 587,
+            "smtp_user": "",
+            "sender_email": "",
+        })
+
+    _atomic_write_json(config_path, current)
+    return runtime_settings
 
 
 def save_non_secret_email_settings(
