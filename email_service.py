@@ -53,6 +53,7 @@ class EmailManagementWindow:
         self._editor = None
         self._editor_tree = None
         self._editor_item = None
+        self._placeholder_state = {}
 
         self.status_var = tk.StringVar(value="Ready")
         self.sender_email_var = tk.StringVar(value=self.settings.sender_email)
@@ -98,18 +99,33 @@ class EmailManagementWindow:
         settings_group.pack(fill="x", padx=12, pady=(0, 8))
 
         ttk.Label(settings_group, text="SMTP Host", style="Email.TLabel").grid(row=0, column=0, sticky="w", padx=5, pady=3)
-        ttk.Entry(settings_group, textvariable=self.smtp_host_var, width=28).grid(row=0, column=1, sticky="we", padx=5, pady=3)
+        self.smtp_host_entry = ttk.Entry(settings_group, textvariable=self.smtp_host_var, width=28)
+        self.smtp_host_entry.grid(row=0, column=1, sticky="we", padx=5, pady=3)
+        self._add_placeholder(self.smtp_host_entry, self.smtp_host_var, "e.g. smtp.gmail.com")
+
         ttk.Label(settings_group, text="SMTP Port", style="Email.TLabel").grid(row=0, column=2, sticky="w", padx=5, pady=3)
-        ttk.Entry(settings_group, textvariable=self.smtp_port_var, width=8).grid(row=0, column=3, sticky="w", padx=5, pady=3)
+        self.smtp_port_entry = ttk.Entry(settings_group, textvariable=self.smtp_port_var, width=8)
+        self.smtp_port_entry.grid(row=0, column=3, sticky="w", padx=5, pady=3)
 
         ttk.Label(settings_group, text="Sender Email", style="Email.TLabel").grid(row=1, column=0, sticky="w", padx=5, pady=3)
-        ttk.Entry(settings_group, textvariable=self.sender_email_var, width=36).grid(row=1, column=1, sticky="we", padx=5, pady=3)
+        self.sender_email_entry = ttk.Entry(settings_group, textvariable=self.sender_email_var, width=36)
+        self.sender_email_entry.grid(row=1, column=1, sticky="we", padx=5, pady=3)
+        self._add_placeholder(self.sender_email_entry, self.sender_email_var, "e.g. sender@example.com")
+
         ttk.Label(settings_group, text="SMTP User", style="Email.TLabel").grid(row=1, column=2, sticky="w", padx=5, pady=3)
-        ttk.Entry(settings_group, textvariable=self.smtp_user_var, width=36).grid(row=1, column=3, sticky="we", padx=5, pady=3)
+        self.smtp_user_entry = ttk.Entry(settings_group, textvariable=self.smtp_user_var, width=36)
+        self.smtp_user_entry.grid(row=1, column=3, sticky="we", padx=5, pady=3)
+        self._add_placeholder(self.smtp_user_entry, self.smtp_user_var, "SMTP account or email")
 
         ttk.Label(settings_group, text="SMTP Password", style="Email.TLabel").grid(row=2, column=0, sticky="w", padx=5, pady=3)
         self.smtp_pass_entry = ttk.Entry(settings_group, textvariable=self.smtp_pass_var, width=36, show="*")
         self.smtp_pass_entry.grid(row=2, column=1, sticky="we", padx=5, pady=3)
+        self._add_placeholder(
+            self.smtp_pass_entry,
+            self.smtp_pass_var,
+            "Enter SMTP password",
+            password=True,
+        )
         ttk.Checkbutton(
             settings_group,
             text="Show",
@@ -199,16 +215,73 @@ class EmailManagementWindow:
         container.columnconfigure(0, weight=1)
         return tree
 
+    def _add_placeholder(self, entry, variable, placeholder, password=False):
+        """Add a lightweight placeholder without treating it as real input."""
+        state = {
+            "variable": variable,
+            "placeholder": placeholder,
+            "password": password,
+            "active": False,
+        }
+        self._placeholder_state[entry] = state
+
+        def show_placeholder():
+            if variable.get():
+                return
+            state["active"] = True
+            variable.set(placeholder)
+            entry.configure(foreground="#6B7280")
+            if password:
+                entry.configure(show="")
+
+        def focus_in(_event):
+            if not state["active"]:
+                return
+            state["active"] = False
+            variable.set("")
+            entry.configure(foreground="#000000")
+            if password:
+                entry.configure(show="" if self._show_password_var.get() else "*")
+
+        def focus_out(_event):
+            if not variable.get():
+                show_placeholder()
+
+        entry.bind("<FocusIn>", focus_in)
+        entry.bind("<FocusOut>", focus_out)
+        show_placeholder()
+
+    def _entry_value(self, entry, strip=True):
+        state = self._placeholder_state.get(entry)
+        if state and state["active"]:
+            return ""
+        value = state["variable"].get() if state else entry.get()
+        return value.strip() if strip else value
+
+    def _restore_placeholder(self, entry):
+        state = self._placeholder_state.get(entry)
+        if not state:
+            return
+        state["variable"].set("")
+        state["active"] = True
+        state["variable"].set(state["placeholder"])
+        entry.configure(foreground="#6B7280")
+        if state["password"]:
+            entry.configure(show="")
+
     def _toggle_password_visibility(self):
+        state = self._placeholder_state.get(self.smtp_pass_entry)
+        if state and state["active"]:
+            self.smtp_pass_entry.configure(show="")
+            return
         self.smtp_pass_entry.configure(show="" if self._show_password_var.get() else "*")
 
     def _clear_password(self):
-        self.smtp_pass_var.set("")
         self._show_password_var.set(False)
         try:
-            self.smtp_pass_entry.configure(show="*")
+            self._restore_placeholder(self.smtp_pass_entry)
         except tk.TclError:
-            pass
+            self.smtp_pass_var.set("")
 
     def _close_window(self):
         if self._sending_ids:
@@ -224,17 +297,17 @@ class EmailManagementWindow:
 
     def save_smtp_settings_without_popup(self):
         try:
-            smtp_port = int(self.smtp_port_var.get().strip())
+            smtp_port = int(self.smtp_port_entry.get().strip())
         except ValueError as exc:
             raise EmailConfigurationError("SMTP Port must be a number.") from exc
 
         self.settings = save_non_secret_email_settings(
             self.config_path,
             {
-                "smtp_host": self.smtp_host_var.get().strip(),
+                "smtp_host": self._entry_value(self.smtp_host_entry),
                 "smtp_port": smtp_port,
-                "smtp_user": self.smtp_user_var.get().strip(),
-                "sender_email": self.sender_email_var.get().strip(),
+                "smtp_user": self._entry_value(self.smtp_user_entry),
+                "sender_email": self._entry_value(self.sender_email_entry),
             },
         )
 
@@ -407,7 +480,7 @@ class EmailManagementWindow:
             messagebox.showerror("SMTP Settings Error", str(exc), parent=self.window)
             return
 
-        password = self.smtp_pass_var.get()
+        password = self._entry_value(self.smtp_pass_entry, strip=False)
         if not password:
             messagebox.showerror("SMTP Password Required", "Enter the SMTP password before sending.", parent=self.window)
             self.smtp_pass_entry.focus_set()
